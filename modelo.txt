@@ -1,0 +1,1248 @@
+# Implementação Completa: Sistema de Mensagens Instagram Multi-Conta
+
+## 📋 Índice
+1. [Arquitetura do Sistema](#arquitetura-do-sistema)
+2. [Configuração Meta/Instagram](#configuração-metainstagram)
+3. [Backend - Estrutura](#backend---estrutura)
+4. [Banco de Dados MongoDB](#banco-de-dados-mongodb)
+5. [OAuth Flow](#oauth-flow)
+6. [Webhooks](#webhooks)
+7. [Frontend](#frontend)
+8. [Deploy](#deploy)
+9. [Problemas Comuns e Soluções](#problemas-comuns-e-soluções)
+
+---
+
+## Arquitetura do Sistema
+
+### Stack Tecnológica
+- **Backend**: Node.js v25.2.1 + Express
+- **Banco de Dados**: MongoDB Atlas (cloud)
+- **Frontend**: Vanilla HTML/CSS/JavaScript
+- **API**: Instagram Graph API v24.0 (Business Login)
+- **Deploy**: EasyPanel com Caddy reverse proxy
+
+### Fluxo de Dados
+```
+Instagram API ←→ Backend (Express) ←→ MongoDB Atlas
+                     ↕
+                 Frontend
+```
+
+---
+
+## Configuração Meta/Instagram
+
+### 1. Criar App no Meta Developers
+
+1. Acesse https://developers.facebook.com/apps
+2. Criar novo app → Tipo: **Business**
+3. Adicionar produto: **Instagram**
+
+### 2. Configurações Essenciais
+
+#### App Dashboard
+```
+App ID: 1446559600506963
+App Secret: 3061bb822fb6eba60f89c670a45eccec
+```
+
+#### Instagram Basic Display
+- **OAuth Redirect URIs**:
+  ```
+  https://teste.clerky.com.br/api/instagram/callback
+  ```
+
+#### Webhooks
+- **Callback URL**: `https://teste.clerky.com.br/webhook/instagram`
+- **Verify Token**: `Tokenf7j4hd723fG5o2wle` (escolha qualquer string)
+- **Campos subscritos**:
+  - `messages`
+  - `messaging_postbacks`
+  - `message_echoes`
+
+#### Permissões Necessárias
+```javascript
+const scopes = [
+  'instagram_business_basic',
+  'instagram_business_manage_messages',
+  'instagram_business_manage_comments',
+  'instagram_business_content_publish',
+  'instagram_business_manage_insights'
+];
+```
+
+---
+
+## Backend - Estrutura
+
+### Estrutura de Diretórios
+```
+backend/
+├── server.js                 # Servidor Express principal
+├── database/
+│   ├── init.js              # Re-exporta mongo.js
+│   └── mongo.js             # Camada de abstração MongoDB
+├── routes/
+│   ├── instagram.js         # Rotas OAuth e operações
+│   └── webhook.js           # Receber eventos do Instagram
+├── .env                     # Variáveis de ambiente
+└── package.json
+```
+
+### Dependências (package.json)
+```json
+{
+  "name": "instagram-test-backend",
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.3.1",
+    "axios": "^1.6.0",
+    "mongodb": "^6.3.0"
+  }
+}
+```
+
+### Variáveis de Ambiente (.env)
+```env
+PORT=3000
+APP_URL=https://front.clerky.com.br
+
+# Meta App Configuration
+META_GRAPH_VERSION=v24.0
+META_APP_ID=1446559600506963
+META_APP_SECRET=3061bb822fb6eba60f89c670a45eccec
+META_REDIRECT_URI=https://teste.clerky.com.br/api/instagram/callback
+META_VERIFY_TOKEN=Tokenf7j4hd723fG5o2wle
+
+# MongoDB Configuration
+MONGO_URI=mongodb+srv://clerky:qGfdSCz1bDTuHD5o@cluster0.6mgam.mongodb.net/sis-clerky?retryWrites=true&w=majority&appName=Cluster0
+```
+
+---
+
+## Banco de Dados MongoDB
+
+### Schema das Collections
+
+#### Collection: `users`
+```javascript
+{
+  _id: Number,           // ID do usuário no sistema
+  name: String,          // Nome do usuário
+  created_at: Date
+}
+```
+
+#### Collection: `instagram_accounts`
+```javascript
+{
+  _id: ObjectId,
+  user_id: Number,                    // Referência para users._id
+  instagram_account_id: String,       // ID usado nos webhooks (entry.id)
+  webhook_ids: [String],              // IDs alternativos de webhook
+  username: String,                   // @username do Instagram
+  access_token: String,               // Long-lived token
+  page_id: String,                    // ID da conta Instagram Business
+  page_name: String,                  // Nome da página
+  token_expires_at: Date,             // Expiração do token (60 dias)
+  created_at: Date,
+  updated_at: Date
+}
+```
+
+#### Collection: `messages`
+```javascript
+{
+  _id: ObjectId,
+  account_id: String,      // ObjectId da instagram_accounts (convertido para string)
+  sender_id: String,       // Instagram User ID que enviou
+  recipient_id: String,    // Instagram Account ID que recebeu
+  message_id: String,      // Instagram Message ID (mid)
+  text: String,            // Texto da mensagem
+  timestamp: Number,       // Unix timestamp
+  raw_data: String,        // JSON stringified do webhook payload
+  replied: Boolean,        // Flag de resposta
+  created_at: Date
+}
+```
+
+#### Collection: `comments`
+```javascript
+{
+  _id: ObjectId,
+  account_id: String,
+  comment_id: String,
+  post_id: String,
+  from_user_id: String,
+  from_username: String,
+  text: String,
+  timestamp: Number,
+  raw_data: String,
+  replied: Boolean,
+  created_at: Date
+}
+```
+
+### Índices
+```javascript
+// instagram_accounts
+db.collection('instagram_accounts').createIndex({ instagram_account_id: 1 }, { unique: true });
+db.collection('instagram_accounts').createIndex({ user_id: 1 });
+
+// messages
+db.collection('messages').createIndex({ message_id: 1 }, { unique: true });
+db.collection('messages').createIndex({ account_id: 1 });
+
+// comments
+db.collection('comments').createIndex({ comment_id: 1 }, { unique: true });
+db.collection('comments').createIndex({ account_id: 1 });
+```
+
+### Camada de Abstração (database/mongo.js)
+
+```javascript
+import { MongoClient, ObjectId } from 'mongodb';
+import dotenv from 'dotenv';
+
+dotenv.config();
+
+const MONGO_URI = process.env.MONGO_URI;
+const client = new MongoClient(MONGO_URI);
+let db = null;
+
+async function connectMongo() {
+  if (!db) {
+    await client.connect();
+    db = client.db();
+    console.log('✅ Conectado ao MongoDB');
+  }
+  return db;
+}
+
+const dbWrapper = {
+  // Criar usuário
+  async createUser(userId, name) {
+    await connectMongo();
+    const collection = db.collection('users');
+    await collection.updateOne(
+      { _id: parseInt(userId) },
+      { 
+        $set: { 
+          _id: parseInt(userId), 
+          name, 
+          created_at: new Date() 
+        } 
+      },
+      { upsert: true }
+    );
+  },
+
+  // Inserir/atualizar conta Instagram
+  async upsertInstagramAccount(data) {
+    await connectMongo();
+    const collection = db.collection('instagram_accounts');
+    
+    const doc = {
+      user_id: parseInt(data.user_id),
+      instagram_account_id: data.instagram_account_id,
+      username: data.username,
+      access_token: data.access_token,
+      page_id: data.page_id,
+      page_name: data.page_name,
+      webhook_ids: data.webhook_ids || [data.instagram_account_id],
+      token_expires_at: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+      updated_at: new Date()
+    };
+
+    const result = await collection.updateOne(
+      { instagram_account_id: data.instagram_account_id },
+      { 
+        $set: doc,
+        $setOnInsert: { created_at: new Date() }
+      },
+      { upsert: true }
+    );
+    
+    return result;
+  },
+
+  // Buscar contas por user_id
+  async getAccountsByUserId(userId) {
+    await connectMongo();
+    const collection = db.collection('instagram_accounts');
+    const docs = await collection.find({ user_id: parseInt(userId) }).toArray();
+    
+    return docs.map(doc => ({
+      id: doc._id.toString(),
+      user_id: doc.user_id,
+      instagram_account_id: doc.instagram_account_id,
+      username: doc.username,
+      page_name: doc.page_name,
+      page_id: doc.page_id,
+      token_expires_at: doc.token_expires_at,
+      created_at: doc.created_at,
+      updated_at: doc.updated_at
+    }));
+  },
+
+  // Buscar conta por ObjectId
+  async getAccountById(accountId) {
+    await connectMongo();
+    const collection = db.collection('instagram_accounts');
+    const doc = await collection.findOne({ _id: new ObjectId(accountId) });
+    if (!doc) return null;
+    
+    return {
+      id: doc._id.toString(),
+      instagram_account_id: doc.instagram_account_id,
+      username: doc.username,
+      access_token: doc.access_token,
+      page_id: doc.page_id,
+      page_name: doc.page_name
+    };
+  },
+
+  // Buscar conta por Instagram Account ID (webhook)
+  async getAccountByInstagramId(instagramAccountId) {
+    await connectMongo();
+    const collection = db.collection('instagram_accounts');
+    
+    // Procurar por ID principal ou webhook_ids alternativos
+    const doc = await collection.findOne({
+      $or: [
+        { instagram_account_id: instagramAccountId },
+        { webhook_ids: instagramAccountId }
+      ]
+    });
+    
+    if (!doc) return null;
+    
+    return {
+      id: doc._id.toString(),
+      instagram_account_id: doc.instagram_account_id,
+      access_token: doc.access_token
+    };
+  },
+
+  // Salvar mensagem
+  async saveMessage(data) {
+    await connectMongo();
+    const collection = db.collection('messages');
+    
+    const doc = {
+      account_id: data.account_id,
+      sender_id: data.sender_id,
+      recipient_id: data.recipient_id,
+      message_id: data.message_id,
+      text: data.text,
+      timestamp: data.timestamp,
+      raw_data: data.raw_data,
+      replied: false,
+      created_at: new Date()
+    };
+
+    await collection.updateOne(
+      { message_id: data.message_id },
+      { $set: doc },
+      { upsert: true }
+    );
+  },
+
+  // Buscar mensagens por account_id
+  async getMessagesByAccountId(accountId) {
+    await connectMongo();
+    const collection = db.collection('messages');
+    const docs = await collection
+      .find({ account_id: accountId })
+      .sort({ timestamp: -1 })
+      .limit(100)
+      .toArray();
+    
+    return docs;
+  },
+
+  // Salvar comentário
+  async saveComment(data) {
+    await connectMongo();
+    const collection = db.collection('comments');
+    
+    const doc = {
+      account_id: data.account_id,
+      comment_id: data.comment_id,
+      post_id: data.post_id,
+      from_user_id: data.from_user_id,
+      from_username: data.from_username,
+      text: data.text,
+      timestamp: data.timestamp,
+      raw_data: data.raw_data,
+      replied: false,
+      created_at: new Date()
+    };
+
+    await collection.updateOne(
+      { comment_id: data.comment_id },
+      { $set: doc },
+      { upsert: true }
+    );
+  },
+
+  // Atualizar token
+  async updateToken(accountId, newToken) {
+    await connectMongo();
+    const collection = db.collection('instagram_accounts');
+    
+    await collection.updateOne(
+      { _id: new ObjectId(accountId) },
+      {
+        $set: {
+          access_token: newToken,
+          token_expires_at: new Date(Date.now() + 60 * 24 * 60 * 60 * 1000),
+          updated_at: new Date()
+        }
+      }
+    );
+  }
+};
+
+// Inicializar database
+export async function initDatabase() {
+  console.log('🗄️  Inicializando banco de dados MongoDB...');
+  await connectMongo();
+
+  // Criar índices
+  try {
+    const igAccounts = db.collection('instagram_accounts');
+    await igAccounts.createIndex({ instagram_account_id: 1 }, { unique: true });
+    await igAccounts.createIndex({ user_id: 1 });
+    
+    const messages = db.collection('messages');
+    await messages.createIndex({ message_id: 1 }, { unique: true });
+    await messages.createIndex({ account_id: 1 });
+    
+    const comments = db.collection('comments');
+    await comments.createIndex({ comment_id: 1 }, { unique: true });
+    await comments.createIndex({ account_id: 1 });
+    
+    console.log('✅ Índices criados');
+  } catch (error) {
+    console.error('⚠️ Erro ao criar índices:', error.message);
+  }
+
+  // Debug: contar documentos
+  const count = await db.collection('instagram_accounts').countDocuments();
+  console.log(`📊 Contas no banco: ${count}`);
+  console.log('✅ Banco de dados inicializado');
+}
+
+export { dbWrapper as db };
+export default dbWrapper;
+```
+
+---
+
+## OAuth Flow
+
+### Fluxo Completo
+
+1. **Usuário clica em "Conectar Instagram"**
+2. **Redirecionamento para Instagram OAuth**
+3. **Usuário autoriza o app**
+4. **Instagram redireciona para callback com `code`**
+5. **Backend troca `code` por `access_token`**
+6. **Backend obtém long-lived token**
+7. **Backend salva conta no MongoDB**
+
+### Implementação (routes/instagram.js)
+
+```javascript
+import express from 'express';
+import axios from 'axios';
+import db from '../database/init.js';
+
+const router = express.Router();
+
+const META_GRAPH_VERSION = process.env.META_GRAPH_VERSION || 'v24.0';
+const META_APP_ID = process.env.META_APP_ID;
+const META_APP_SECRET = process.env.META_APP_SECRET;
+const META_REDIRECT_URI = process.env.META_REDIRECT_URI;
+const APP_URL = process.env.APP_URL;
+
+// 1. Gerar URL de login OAuth (Instagram Business Login)
+router.get('/login', (req, res) => {
+  const userId = req.query.userId || '1';
+  
+  const scopes = [
+    'instagram_business_basic',
+    'instagram_business_manage_messages',
+    'instagram_business_manage_comments',
+    'instagram_business_content_publish',
+    'instagram_business_manage_insights'
+  ];
+
+  const authUrl = `https://www.instagram.com/oauth/authorize?` +
+    `client_id=${META_APP_ID}` +
+    `&redirect_uri=${encodeURIComponent(META_REDIRECT_URI)}` +
+    `&scope=${scopes.join(',')}` +
+    `&response_type=code` +
+    `&state=${userId}`;
+
+  res.redirect(authUrl);
+});
+
+// 2. Callback OAuth
+router.get('/callback', async (req, res) => {
+  const { code, state: userId } = req.query;
+
+  if (!code) {
+    return res.redirect(`${APP_URL}?error=no_code`);
+  }
+
+  try {
+    // 2.1. Trocar code por access_token
+    const tokenResponse = await axios.post(
+      'https://api.instagram.com/oauth/access_token',
+      new URLSearchParams({
+        client_id: META_APP_ID,
+        client_secret: META_APP_SECRET,
+        grant_type: 'authorization_code',
+        redirect_uri: META_REDIRECT_URI,
+        code
+      }),
+      {
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
+      }
+    );
+
+    const { access_token, user_id } = tokenResponse.data;
+
+    // 2.2. Obter long-lived token
+    const longLivedResponse = await axios.get(
+      'https://graph.instagram.com/access_token',
+      {
+        params: {
+          grant_type: 'ig_exchange_token',
+          client_secret: META_APP_SECRET,
+          access_token
+        }
+      }
+    );
+
+    const longLivedToken = longLivedResponse.data.access_token;
+
+    // 2.3. Obter informações da conta
+    const profileResponse = await axios.get(
+      `https://graph.instagram.com/me`,
+      {
+        params: {
+          fields: 'id,username,account_type,name',
+          access_token: longLivedToken
+        }
+      }
+    );
+
+    const igAccount = profileResponse.data;
+
+    // 2.4. Criar usuário se não existe
+    await db.createUser(userId, `user_${userId}`);
+
+    // 2.5. Salvar conta Instagram
+    await db.upsertInstagramAccount({
+      user_id: parseInt(userId),
+      instagram_account_id: igAccount.id,
+      username: igAccount.username,
+      access_token: longLivedToken,
+      page_id: igAccount.id,
+      page_name: igAccount.username
+    });
+
+    console.log(`✅ Conta Instagram conectada: @${igAccount.username} (ID: ${igAccount.id})`);
+
+    res.redirect(`${APP_URL}?connected=success`);
+  } catch (error) {
+    console.error('Erro no callback OAuth:', error.response?.data || error.message);
+    res.redirect(`${APP_URL}?error=oauth_failed`);
+  }
+});
+
+// 3. Listar contas conectadas
+router.get('/accounts', async (req, res) => {
+  const userId = req.query.userId || '1';
+  
+  try {
+    const accounts = await db.getAccountsByUserId(userId);
+    res.json({ accounts: accounts || [] });
+  } catch (error) {
+    console.error('Erro ao listar contas:', error);
+    res.json({ accounts: [] });
+  }
+});
+
+// 4. Enviar mensagem
+router.post('/send-message', async (req, res) => {
+  const { accountId, recipientId, message } = req.body;
+
+  if (!accountId || !recipientId || !message) {
+    return res.status(400).json({ error: 'Missing required fields' });
+  }
+
+  try {
+    const account = await db.getAccountById(accountId);
+
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' });
+    }
+
+    const response = await axios.post(
+      `https://graph.instagram.com/${META_GRAPH_VERSION}/me/messages`,
+      {
+        recipient: { id: recipientId },
+        message: { text: message }
+      },
+      {
+        headers: {
+          'Authorization': `Bearer ${account.access_token}`,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+
+    res.json({ success: true, data: response.data });
+  } catch (error) {
+    console.error('Erro ao enviar mensagem:', error.response?.data || error.message);
+    res.status(500).json({ 
+      error: 'Failed to send message',
+      details: error.response?.data 
+    });
+  }
+});
+
+// 5. Listar mensagens
+router.get('/messages', async (req, res) => {
+  const accountId = req.query.accountId;
+  
+  if (!accountId) {
+    return res.status(400).json({ error: 'accountId is required' });
+  }
+
+  try {
+    const messages = await db.getMessagesByAccountId(accountId);
+    res.json({ messages: messages || [] });
+  } catch (error) {
+    console.error('Erro ao listar mensagens:', error);
+    res.json({ messages: [] });
+  }
+});
+
+// 6. Refresh token
+router.post('/refresh-token', async (req, res) => {
+  const { accountId } = req.body;
+
+  try {
+    const account = await db.getAccountById(accountId);
+
+    if (!account) {
+      return res.status(404).json({ error: 'Account not found' });
+    }
+
+    const response = await axios.get(
+      `https://graph.facebook.com/${META_GRAPH_VERSION}/oauth/access_token`,
+      {
+        params: {
+          grant_type: 'fb_exchange_token',
+          client_id: META_APP_ID,
+          client_secret: META_APP_SECRET,
+          fb_exchange_token: account.access_token
+        }
+      }
+    );
+
+    const newToken = response.data.access_token;
+    await db.updateToken(accountId, newToken);
+
+    res.json({ success: true, message: 'Token refreshed' });
+  } catch (error) {
+    console.error('Erro ao renovar token:', error.response?.data || error.message);
+    res.status(500).json({ error: 'Failed to refresh token' });
+  }
+});
+
+export default router;
+```
+
+---
+
+## Webhooks
+
+### Configuração no Meta App
+
+1. **Products → Webhooks**
+2. **Edit Subscription** para Instagram
+3. **Callback URL**: `https://teste.clerky.com.br/webhook/instagram`
+4. **Verify Token**: `Tokenf7j4hd723fG5o2wle`
+5. **Subscribe to**: `messages`, `messaging_postbacks`, `message_echoes`
+
+### Implementação (routes/webhook.js)
+
+```javascript
+import express from 'express';
+import db from '../database/init.js';
+
+const router = express.Router();
+const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
+
+// Verificação do webhook (GET)
+router.get('/instagram', (req, res) => {
+  const mode = req.query['hub.mode'];
+  const token = req.query['hub.verify_token'];
+  const challenge = req.query['hub.challenge'];
+
+  if (mode === 'subscribe' && token === VERIFY_TOKEN) {
+    console.log('✅ Webhook verificado com sucesso!');
+    return res.status(200).send(challenge);
+  }
+  
+  console.error('❌ Token inválido');
+  return res.sendStatus(403);
+});
+
+// Receber eventos do webhook (POST)
+router.post('/instagram', async (req, res) => {
+  const body = req.body;
+
+  console.log('📨 Webhook recebido:', JSON.stringify(body, null, 2));
+
+  if (body.object === 'instagram') {
+    for (const entry of body.entry || []) {
+      const recipientId = entry.id; // ID da conta Instagram que recebeu
+
+      // Processar mensagens
+      if (entry.messaging) {
+        for (const event of entry.messaging) {
+          await handleMessage(recipientId, event);
+        }
+      }
+
+      // Processar comentários
+      if (entry.changes) {
+        for (const change of entry.changes) {
+          await handleChange(recipientId, change);
+        }
+      }
+    }
+
+    res.status(200).send('EVENT_RECEIVED');
+  } else {
+    res.sendStatus(404);
+  }
+});
+
+// Processar mensagem recebida
+async function handleMessage(recipientId, event) {
+  const senderId = event.sender?.id;
+  const message = event.message;
+  const timestamp = event.timestamp;
+
+  console.log(`💬 Mensagem recebida na conta ${recipientId} de ${senderId}:`, message?.text);
+
+  // Buscar conta no banco
+  const account = await db.getAccountByInstagramId(recipientId);
+
+  if (!account) {
+    console.error(`❌ Conta ${recipientId} não encontrada no banco`);
+    
+    // Debug: listar todas as contas
+    const allAccounts = await db.getAccountsByUserId(1);
+    console.log(`📊 Contas no banco:`, allAccounts.map(a => ({ 
+      id: a.instagram_account_id, 
+      username: a.username 
+    })));
+    return;
+  }
+
+  // Salvar mensagem
+  await db.saveMessage({
+    account_id: account.id,
+    sender_id: senderId,
+    recipient_id: recipientId,
+    message_id: message?.mid || `msg_${Date.now()}`,
+    text: message?.text || '',
+    timestamp: timestamp,
+    raw_data: JSON.stringify(event)
+  });
+
+  console.log(`✅ Mensagem salva no banco (account_id: ${account.id})`);
+}
+
+// Processar comentários
+async function handleChange(recipientId, change) {
+  const value = change.value;
+
+  console.log(`🔔 Mudança recebida na conta ${recipientId}:`, change.field);
+
+  const account = await db.getAccountByInstagramId(recipientId);
+
+  if (!account) {
+    console.error(`❌ Conta ${recipientId} não encontrada no banco`);
+    return;
+  }
+
+  if (change.field === 'comments' && value.text) {
+    await db.saveComment({
+      account_id: account.id,
+      comment_id: value.id || `comment_${Date.now()}`,
+      post_id: value.media?.id || '',
+      from_user_id: value.from?.id || '',
+      from_username: value.from?.username || '',
+      text: value.text,
+      timestamp: Date.now(),
+      raw_data: JSON.stringify(change)
+    });
+
+    console.log(`✅ Comentário salvo no banco (account_id: ${account.id})`);
+  }
+}
+
+export default router;
+```
+
+---
+
+## Frontend
+
+### Estrutura
+```
+frontend/
+├── index.html
+├── style.css
+├── app.js
+└── package.json (apenas para "serve")
+```
+
+### index.html
+```html
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Instagram DM Manager</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header>
+    <h1>📱 Instagram DM Manager</h1>
+  </header>
+
+  <div class="container">
+    <!-- Seção de Contas -->
+    <div class="section">
+      <div class="section-header">
+        <h2>Contas Conectadas</h2>
+        <button id="connectBtn" class="btn-primary">+ Conectar Instagram</button>
+      </div>
+      <div id="accountsList" class="accounts-list">
+        <p class="empty-state">Nenhuma conta conectada.</p>
+      </div>
+    </div>
+
+    <!-- Seção de Mensagens -->
+    <div id="messagesSection" class="section" style="display: none;">
+      <div class="section-header">
+        <h2 id="messagesTitle">Mensagens</h2>
+        <button id="refreshBtn" class="btn-secondary">🔄 Atualizar</button>
+      </div>
+
+      <!-- Enviar Mensagem -->
+      <div class="send-message">
+        <h3>Enviar Mensagem</h3>
+        <input type="text" id="recipientId" placeholder="ID do destinatário" class="input">
+        <textarea id="messageText" placeholder="Digite sua mensagem..." class="textarea" rows="3"></textarea>
+        <button id="sendBtn" class="btn-primary">✉️ Enviar Mensagem</button>
+      </div>
+
+      <!-- Lista de Mensagens -->
+      <div class="messages-list">
+        <h3>Mensagens Recebidas (<span id="messagesCount">0</span>)</h3>
+        <div id="messagesList" class="messages-container"></div>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
+```
+
+### app.js
+```javascript
+const API_URL = 'https://teste.clerky.com.br/api';
+const USER_ID = 1;
+
+let accounts = [];
+let selectedAccount = null;
+let messages = [];
+
+document.addEventListener('DOMContentLoaded', () => {
+  loadAccounts();
+  setupEventListeners();
+  
+  // Auto-refresh mensagens a cada 5 segundos
+  setInterval(() => {
+    if (selectedAccount) {
+      loadMessages(selectedAccount.id);
+    }
+  }, 5000);
+});
+
+function setupEventListeners() {
+  document.getElementById('connectBtn').addEventListener('click', connectAccount);
+  document.getElementById('refreshBtn').addEventListener('click', () => {
+    if (selectedAccount) loadMessages(selectedAccount.id);
+  });
+  document.getElementById('sendBtn').addEventListener('click', sendMessage);
+}
+
+async function loadAccounts() {
+  try {
+    const response = await fetch(`${API_URL}/instagram/accounts?userId=${USER_ID}`);
+    const data = await response.json();
+    accounts = data.accounts;
+    renderAccounts();
+  } catch (error) {
+    console.error('Erro ao carregar contas:', error);
+  }
+}
+
+function renderAccounts() {
+  const container = document.getElementById('accountsList');
+  
+  if (accounts.length === 0) {
+    container.innerHTML = '<p class="empty-state">Nenhuma conta conectada.</p>';
+    return;
+  }
+  
+  container.innerHTML = accounts.map(account => `
+    <div class="account-card ${selectedAccount?.id === account.id ? 'active' : ''}" 
+         onclick="selectAccount('${account.id}')">
+      <div class="account-info">
+        <h3>@${account.username}</h3>
+        <p>${account.page_name || 'Sem página'}</p>
+      </div>
+      <div class="account-status">
+        <span class="status-badge">Ativa</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+function selectAccount(accountId) {
+  selectedAccount = accounts.find(acc => acc.id === accountId);
+  renderAccounts();
+  showMessagesSection();
+  loadMessages(accountId);
+}
+
+function showMessagesSection() {
+  document.getElementById('messagesSection').style.display = 'block';
+  document.getElementById('messagesTitle').textContent = `Mensagens - @${selectedAccount.username}`;
+}
+
+async function loadMessages(accountId) {
+  try {
+    const response = await fetch(`${API_URL}/instagram/messages?accountId=${accountId}`);
+    const data = await response.json();
+    messages = data.messages || [];
+    renderMessages();
+  } catch (error) {
+    console.error('Erro ao carregar mensagens:', error);
+  }
+}
+
+function renderMessages() {
+  const container = document.getElementById('messagesList');
+  const countEl = document.getElementById('messagesCount');
+  
+  countEl.textContent = messages.length;
+  
+  if (messages.length === 0) {
+    container.innerHTML = '<p class="empty-state">Nenhuma mensagem recebida.</p>';
+    return;
+  }
+  
+  container.innerHTML = messages.map(msg => {
+    const date = new Date(msg.timestamp);
+    const isEcho = msg.sender_id === msg.recipient_id;
+    
+    return `
+      <div class="message-card ${isEcho ? 'echo' : ''}">
+        <div class="message-header">
+          <strong>${isEcho ? 'Você' : `De: ${msg.sender_id}`}</strong>
+          <span class="message-time">${date.toLocaleString('pt-BR')}</span>
+        </div>
+        <div class="message-body">${msg.text}</div>
+        <div class="message-footer">
+          <small>ID: ${msg.message_id}</small>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
+async function sendMessage() {
+  const recipientId = document.getElementById('recipientId').value;
+  const messageText = document.getElementById('messageText').value;
+  
+  if (!recipientId || !messageText) {
+    alert('Preencha todos os campos');
+    return;
+  }
+  
+  try {
+    const response = await fetch(`${API_URL}/instagram/send-message`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        accountId: selectedAccount.id,
+        recipientId,
+        message: messageText
+      })
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      alert('Mensagem enviada com sucesso!');
+      document.getElementById('messageText').value = '';
+      setTimeout(() => loadMessages(selectedAccount.id), 2000);
+    } else {
+      alert('Erro ao enviar mensagem: ' + JSON.stringify(data));
+    }
+  } catch (error) {
+    console.error('Erro ao enviar mensagem:', error);
+    alert('Erro ao enviar mensagem');
+  }
+}
+
+function connectAccount() {
+  window.location.href = `${API_URL}/instagram/login?userId=${USER_ID}`;
+}
+```
+
+---
+
+## Deploy
+
+### Backend (EasyPanel)
+
+1. **Criar serviço no EasyPanel**:
+   - Type: GitHub
+   - Repository: `guipratiko/insta-back`
+   - Branch: `main`
+   - Build Command: `npm install`
+   - Start Command: `npm start`
+
+2. **Variáveis de ambiente**:
+   - Adicionar todas as variáveis do `.env`
+
+3. **Domínio**:
+   - Configurar: `teste.clerky.com.br`
+   - SSL automático via Caddy
+
+### Frontend (EasyPanel)
+
+1. **Criar serviço**:
+   - Type: GitHub
+   - Repository: `guipratiko/insta-front`
+   - Branch: `main`
+   - Build Command: `npm install`
+   - Start Command: `npx serve -l 3001`
+
+2. **Domínio**:
+   - Configurar: `front.clerky.com.br`
+
+### CORS no Backend
+
+```javascript
+// server.js
+import cors from 'cors';
+
+const allowedOrigins = [
+  'https://front.clerky.com.br',
+  'http://localhost:3001'
+];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true
+}));
+```
+
+---
+
+## Problemas Comuns e Soluções
+
+### 1. Webhook ID vs API ID
+
+**Problema**: O ID retornado pela API OAuth (`igAccount.id`) pode ser diferente do ID que vem nos webhooks (`entry.id`).
+
+**Solução**: Manter campo `webhook_ids` array para mapear múltiplos IDs:
+```javascript
+{
+  instagram_account_id: '17841475047401790',  // ID principal
+  webhook_ids: ['17841475047401790', '17841400776820446']  // IDs alternativos
+}
+```
+
+Buscar por ambos:
+```javascript
+const doc = await collection.findOne({
+  $or: [
+    { instagram_account_id: instagramAccountId },
+    { webhook_ids: instagramAccountId }
+  ]
+});
+```
+
+### 2. Mensagens Duplicadas
+
+**Problema**: Webhook envia eventos duplicados (mensagem enviada + echo).
+
+**Solução**: Usar `message_id` único no MongoDB com índice unique:
+```javascript
+await collection.updateOne(
+  { message_id: data.message_id },
+  { $set: doc },
+  { upsert: true }
+);
+```
+
+### 3. Token Expiration
+
+**Problema**: Long-lived tokens expiram após 60 dias.
+
+**Solução**: Implementar refresh automático:
+```javascript
+// Agendar refresh a cada 30 dias
+setInterval(async () => {
+  const accounts = await db.getAccountsByUserId(userId);
+  for (const account of accounts) {
+    await refreshToken(account.id);
+  }
+}, 30 * 24 * 60 * 60 * 1000);
+```
+
+### 4. Múltiplas Contas por Usuário
+
+**Problema**: Diferenciar mensagens de contas diferentes do mesmo usuário.
+
+**Solução**: Usar `entry.id` do webhook para identificar qual conta recebeu:
+```javascript
+// Webhook entry.id → instagram_account_id no banco
+const account = await db.getAccountByInstagramId(entry.id);
+```
+
+### 5. CORS Errors
+
+**Problema**: Frontend não consegue acessar backend em produção.
+
+**Solução**: Configurar CORS corretamente no backend com origem específica:
+```javascript
+app.use(cors({
+  origin: 'https://front.clerky.com.br',
+  credentials: true
+}));
+```
+
+---
+
+## Checklist de Implementação
+
+### Meta/Instagram Setup
+- [ ] Criar app no Meta Developers
+- [ ] Adicionar produto Instagram
+- [ ] Configurar OAuth redirect URIs
+- [ ] Configurar webhooks (callback URL + verify token)
+- [ ] Subscrever campos: messages, messaging_postbacks
+
+### Backend
+- [ ] Criar projeto Node.js com Express
+- [ ] Configurar MongoDB Atlas
+- [ ] Implementar camada de abstração do banco
+- [ ] Criar rotas OAuth (login, callback)
+- [ ] Criar rotas de webhook (GET verification, POST events)
+- [ ] Implementar CORS
+- [ ] Deploy no servidor
+
+### Frontend
+- [ ] Criar interface HTML/CSS/JS
+- [ ] Implementar listagem de contas
+- [ ] Implementar visualização de mensagens
+- [ ] Implementar envio de mensagens
+- [ ] Auto-refresh de mensagens
+- [ ] Deploy frontend
+
+### Testes
+- [ ] Testar OAuth flow completo
+- [ ] Testar webhook verification
+- [ ] Enviar mensagem de teste e verificar webhook
+- [ ] Testar envio de mensagem via frontend
+- [ ] Testar múltiplas contas
+- [ ] Verificar mensagens sendo salvas corretamente
+
+---
+
+## Recursos Adicionais
+
+### Documentação Oficial
+- [Instagram Graph API](https://developers.facebook.com/docs/instagram-api)
+- [Instagram Messaging](https://developers.facebook.com/docs/messenger-platform/instagram)
+- [Webhooks](https://developers.facebook.com/docs/graph-api/webhooks)
+
+### Ferramentas Úteis
+- [Graph API Explorer](https://developers.facebook.com/tools/explorer/)
+- [Webhook Testing](https://webhook.site/)
+- [MongoDB Compass](https://www.mongodb.com/products/compass)
+
+---
+
+## Notas Finais
+
+### Limitações da API
+- Long-lived tokens expiram em 60 dias
+- Rate limits aplicam-se por app
+- Webhooks podem ter delay de até 30 segundos
+
+### Melhores Práticas
+1. **Sempre use long-lived tokens** ao invés de short-lived
+2. **Implemente retry logic** para chamadas de API
+3. **Valide webhooks** com verify token
+4. **Use índices MongoDB** para performance
+5. **Monitore expiração de tokens** e renove automaticamente
+6. **Armazene raw_data** dos webhooks para debug
+
+### Segurança
+- Nunca exponha `APP_SECRET` no frontend
+- Use HTTPS em produção
+- Valide todos os webhooks
+- Sanitize user input antes de salvar
+- Rate limit endpoints públicos
+
+---
+
+**Versão**: 1.0  
+**Data**: 14 de Janeiro de 2026  
+**Autor**: Sistema de Mensagens Instagram Multi-Conta
