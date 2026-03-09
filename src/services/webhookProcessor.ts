@@ -1,7 +1,8 @@
 /**
- * Service para processar webhooks do Instagram/Meta
+ * Processamento de webhooks Instagram/Meta (mensagens diretas e comentários).
  */
 
+import { IInstagramInstance } from '../models/InstagramInstance';
 import { InstanceService } from './instanceService';
 import { AutomationService } from './automationService';
 import { ReportService } from './reportService';
@@ -16,17 +17,55 @@ import {
 import { pgPool } from '../config/databases';
 import { emitInstagramUpdate } from '../socket/socketClient';
 
+// ——— Tipos mínimos para eventos do webhook ———
+interface DirectMessageEvent {
+  sender?: { id: string };
+  recipient?: { id: string };
+  message?: { mid: string; text?: string; is_echo?: boolean };
+  timestamp?: number;
+}
+
+interface CommentChangeValue {
+  id?: string;
+  text?: string;
+  from?: { id?: string; username?: string };
+  media?: { id?: string };
+}
+
+/** Retorna a instância com accessToken para chamadas à API, ou null. */
+async function getInstanceWithToken(
+  instagramAccountId: string
+): Promise<(IInstagramInstance & { accessToken: string }) | null> {
+  const instance = await InstanceService.getByInstagramAccountId(instagramAccountId);
+  if (!instance?.accessToken) return null;
+  return instance as IInstagramInstance & { accessToken: string };
+}
+
+/** Verifica se já existe relatório para esta automação + usuário + tipo (preventDuplicate). */
+async function wasAlreadyProcessed(
+  automationId: string,
+  userIdInstagram: string,
+  interactionType: 'dm' | 'comment'
+): Promise<boolean> {
+  const { rows } = await pgPool.query<{ id: string }>(
+    `SELECT id FROM instagram_reports
+     WHERE automation_id = $1 AND user_id_instagram = $2 AND interaction_type = $3
+     LIMIT 1`,
+    [automationId, userIdInstagram, interactionType]
+  );
+  return rows.length > 0;
+}
+
 /**
  * Processar mensagem direta recebida
  */
 export const processDirectMessage = async (
-  instance: any,
-  event: any
+  instance: IInstagramInstance,
+  event: DirectMessageEvent
 ): Promise<void> => {
   try {
     const senderId = event.sender?.id;
     const message = event.message;
-    const timestamp = event.timestamp;
 
     if (!senderId || !message || !message.mid) {
       console.warn('⚠️ Mensagem inválida no webhook:', event);
@@ -35,6 +74,7 @@ export const processDirectMessage = async (
 
     const messageText = message.text || '';
     const messageId = message.mid;
+    const timestamp = event.timestamp ?? Math.floor(Date.now() / 1000);
     const instanceId = instance._id.toString();
     const userId = instance.userId.toString();
 
@@ -71,33 +111,16 @@ export const processDirectMessage = async (
     );
 
     if (automation) {
-      // Verificar se preventDuplicate está ativo e se já processamos este contato com esta automação específica
-      if (automation.preventDuplicate) {
-        const existingReport = await pgPool.query(
-          `SELECT id FROM instagram_reports 
-           WHERE automation_id = $1 
-           AND user_id_instagram = $2 
-           AND interaction_type = 'dm'
-           LIMIT 1`,
-          [automation.id, senderId]
-        );
-
-        if (existingReport.rows.length > 0) {
-          console.log(`⚠️ Contato ${senderId} já foi processado pela automação ${automation.id}. Ignorando.`);
-          return;
-        }
-      }
-
-      // Verificar se a instância tem instagramAccountId
-      if (!instance.instagramAccountId) {
-        console.error(`❌ Instância não tem instagramAccountId`);
+      if (automation.preventDuplicate && (await wasAlreadyProcessed(automation.id, senderId, 'dm'))) {
         return;
       }
-
-      // Buscar instância com accessToken
-      const instanceWithToken = await InstanceService.getByInstagramAccountId(instance.instagramAccountId);
-      if (!instanceWithToken || !instanceWithToken.accessToken) {
-        console.error(`❌ Instância não encontrada ou sem token`);
+      if (!instance.instagramAccountId) {
+        console.error('[Webhook] Instância sem instagramAccountId');
+        return;
+      }
+      const instanceWithToken = await getInstanceWithToken(instance.instagramAccountId);
+      if (!instanceWithToken) {
+        console.error('[Webhook] Instância não encontrada ou sem token');
         return;
       }
 
@@ -232,8 +255,8 @@ export const processDirectMessage = async (
  * Processar comentário recebido
  */
 export const processComment = async (
-  instance: any,
-  change: any
+  instance: IInstagramInstance,
+  change: { field?: string; value?: CommentChangeValue }
 ): Promise<void> => {
   try {
     const value = change.value;
@@ -287,33 +310,19 @@ export const processComment = async (
     );
 
     if (automation) {
-      // Verificar se preventDuplicate está ativo e se já processamos este contato com esta automação específica
-      if (automation.preventDuplicate) {
-        const existingReport = await pgPool.query(
-          `SELECT id FROM instagram_reports 
-           WHERE automation_id = $1 
-           AND user_id_instagram = $2 
-           AND interaction_type = 'comment'
-           LIMIT 1`,
-          [automation.id, fromUserId]
-        );
-
-        if (existingReport.rows.length > 0) {
-          console.log(`⚠️ Contato ${fromUserId} já foi processado pela automação ${automation.id}. Ignorando.`);
-          return;
-        }
-      }
-
-      // Verificar se a instância tem instagramAccountId
-      if (!instance.instagramAccountId) {
-        console.error(`❌ Instância não tem instagramAccountId`);
+      if (
+        automation.preventDuplicate &&
+        (await wasAlreadyProcessed(automation.id, fromUserId, 'comment'))
+      ) {
         return;
       }
-
-      // Buscar instância com accessToken
-      const instanceWithToken = await InstanceService.getByInstagramAccountId(instance.instagramAccountId);
-      if (!instanceWithToken || !instanceWithToken.accessToken) {
-        console.error(`❌ Instância não encontrada ou sem token`);
+      if (!instance.instagramAccountId) {
+        console.error('[Webhook] Instância sem instagramAccountId');
+        return;
+      }
+      const instanceWithToken = await getInstanceWithToken(instance.instagramAccountId);
+      if (!instanceWithToken) {
+        console.error('[Webhook] Instância não encontrada ou sem token');
         return;
       }
 
@@ -474,17 +483,22 @@ export const processComment = async (
   }
 };
 
+/** Payload do webhook Meta (Instagram). */
+interface InstagramWebhookBody {
+  object?: string;
+  entry?: Array<{
+    id: string;
+    messaging?: DirectMessageEvent[];
+    changes?: Array<{ field?: string; value?: CommentChangeValue }>;
+  }>;
+}
+
 /**
- * Processar webhook completo
- * A instância é identificada pelo entry.id (ID da conta Instagram) que vem no evento
+ * Processar webhook completo. A instância é identificada por entry.id (ID da conta Instagram).
  */
-export const processWebhook = async (
-  body: any
-): Promise<void> => {
+export const processWebhook = async (body: InstagramWebhookBody): Promise<void> => {
   try {
-    // Verificar se é um evento do Instagram
     if (body.object !== 'instagram') {
-      console.warn('⚠️ Webhook não é do Instagram:', body.object);
       return;
     }
 
@@ -501,10 +515,9 @@ export const processWebhook = async (
       // Buscar instância pelo instagramAccountId ou webhookIds
       let instance = await InstanceService.getByInstagramAccountId(recipientId);
 
-      // Se não encontrou pelo entry.id, tentar buscar pelo recipient.id do evento de mensagem
-      if (!instance && entry.messaging && entry.messaging.length > 0) {
+      if (!instance && entry.messaging?.length) {
         const firstMessage = entry.messaging[0];
-        const messageRecipientId = firstMessage.recipient?.id;
+        const messageRecipientId = firstMessage?.recipient?.id;
         
         if (messageRecipientId && messageRecipientId !== recipientId) {
           console.log(`🔍 Tentando buscar pelo recipient.id do evento: ${messageRecipientId}`);
@@ -525,16 +538,11 @@ export const processWebhook = async (
 
       console.log(`✅ Instância encontrada: ${instance.name} (${instance.instanceName})`);
 
-      // Processar mensagens
       if (entry.messaging) {
-        for (const event of entry.messaging) {
-          // Ignorar mensagens enviadas por nós (echoes)
-          if (event.message?.is_echo) {
-            continue;
-          }
-
+        for (const ev of entry.messaging) {
+          if (ev.message?.is_echo) continue;
           await processDirectMessage(instance, {
-            ...event,
+            ...ev,
             recipient: { id: recipientId },
           });
         }

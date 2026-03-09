@@ -1,5 +1,5 @@
 /**
- * Service para integração com Meta/Instagram Graph API
+ * Integração com Meta/Instagram Graph API (Instagram + Facebook Graph quando necessário).
  */
 
 import axios, { AxiosError } from 'axios';
@@ -8,6 +8,15 @@ import { META_CONFIG } from '../config/constants';
 export interface MetaAPIResponse {
   statusCode: number;
   data: unknown;
+}
+
+function toMetaError(err: unknown, context: string): Error {
+  if (axios.isAxiosError(err)) {
+    const status = (err as AxiosError).response?.status;
+    const data = (err as AxiosError).response?.data;
+    return new Error(`${context}: ${status} - ${JSON.stringify(data)}`);
+  }
+  return err instanceof Error ? err : new Error(String(err));
 }
 
 /**
@@ -46,18 +55,9 @@ export const requestMetaAPI = async (
     }
 
     const response = await axios(config);
-    return {
-      statusCode: response.status,
-      data: response.data,
-    };
+    return { statusCode: response.status, data: response.data };
   } catch (error) {
-    if (axios.isAxiosError(error)) {
-      const axiosError = error as AxiosError;
-      throw new Error(
-        `Meta API Error: ${axiosError.response?.status} - ${JSON.stringify(axiosError.response?.data)}`
-      );
-    }
-    throw error;
+    throw toMetaError(error, 'Meta API');
   }
 };
 
@@ -94,13 +94,7 @@ export const exchangeCodeForToken = async (code: string): Promise<{
 
     return response.data;
   } catch (error) {
-    if (axios.isAxiosError(error)) {
-      const axiosError = error as AxiosError;
-      throw new Error(
-        `OAuth Error: ${axiosError.response?.status} - ${JSON.stringify(axiosError.response?.data)}`
-      );
-    }
-    throw error;
+    throw toMetaError(error, 'OAuth');
   }
 };
 
@@ -127,13 +121,7 @@ export const exchangeForLongLivedToken = async (shortLivedToken: string): Promis
 
     return response.data;
   } catch (error) {
-    if (axios.isAxiosError(error)) {
-      const axiosError = error as AxiosError;
-      throw new Error(
-        `Token Exchange Error: ${axiosError.response?.status} - ${JSON.stringify(axiosError.response?.data)}`
-      );
-    }
-    throw error;
+    throw toMetaError(error, 'Token Exchange');
   }
 };
 
@@ -168,9 +156,9 @@ export const refreshLongLivedToken = async (accessToken: string): Promise<{
   token_type: string;
   expires_in: number;
 }> => {
-  const baseUrl = 'https://graph.facebook.com';
+  const base = META_CONFIG.FACEBOOK_GRAPH_BASE;
   const version = META_CONFIG.GRAPH_VERSION;
-  const url = `${baseUrl}/${version}/oauth/access_token`;
+  const url = `${base}/${version}/oauth/access_token`;
 
   try {
     const response = await axios.get(url, {
@@ -184,13 +172,7 @@ export const refreshLongLivedToken = async (accessToken: string): Promise<{
 
     return response.data;
   } catch (error) {
-    if (axios.isAxiosError(error)) {
-      const axiosError = error as AxiosError;
-      throw new Error(
-        `Token Refresh Error: ${axiosError.response?.status} - ${JSON.stringify(axiosError.response?.data)}`
-      );
-    }
-    throw error;
+    throw toMetaError(error, 'Token Refresh');
   }
 };
 
@@ -242,74 +224,108 @@ export const sendDirectMessageByCommentId = async (
   return response.data;
 };
 
-/**
- * Enviar mensagem direta com imagem
- */
-export const sendDirectMessageImage = async (
+/** Enviar mensagem direta com anexo (imagem, vídeo ou áudio). */
+function sendDirectMessageAttachment(
+  accessToken: string,
+  pageId: string,
+  recipientId: string,
+  attachmentType: 'image' | 'video' | 'audio',
+  mediaUrl: string
+): Promise<unknown> {
+  return requestMetaAPI('POST', `/${pageId}/messages`, accessToken, {
+    recipient: { id: recipientId },
+    message: {
+      attachment: {
+        type: attachmentType,
+        payload: { url: mediaUrl },
+      },
+    },
+  }).then((r) => r.data);
+}
+
+export const sendDirectMessageImage = (
   accessToken: string,
   pageId: string,
   recipientId: string,
   imageUrl: string
-): Promise<unknown> => {
-  const response = await requestMetaAPI('POST', `/${pageId}/messages`, accessToken, {
-    recipient: { id: recipientId },
-    message: {
-      attachment: {
-        type: 'image',
-        payload: {
-          url: imageUrl,
-        },
-      },
-    },
-  });
+) => sendDirectMessageAttachment(accessToken, pageId, recipientId, 'image', imageUrl);
 
-  return response.data;
-};
-
-/**
- * Enviar mensagem direta com vídeo
- */
-export const sendDirectMessageVideo = async (
+export const sendDirectMessageVideo = (
   accessToken: string,
   pageId: string,
   recipientId: string,
   videoUrl: string
-): Promise<unknown> => {
-  const response = await requestMetaAPI('POST', `/${pageId}/messages`, accessToken, {
-    recipient: { id: recipientId },
-    message: {
-      attachment: {
-        type: 'video',
-        payload: {
-          url: videoUrl,
-        },
-      },
-    },
-  });
+) => sendDirectMessageAttachment(accessToken, pageId, recipientId, 'video', videoUrl);
 
-  return response.data;
-};
-
-/**
- * Enviar mensagem direta com áudio
- */
-export const sendDirectMessageAudio = async (
+export const sendDirectMessageAudio = (
   accessToken: string,
   pageId: string,
   recipientId: string,
   audioUrl: string
-): Promise<unknown> => {
-  const response = await requestMetaAPI('POST', `/${pageId}/messages`, accessToken, {
-    recipient: { id: recipientId },
-    message: {
-      attachment: {
-        type: 'audio',
-        payload: {
-          url: audioUrl,
-        },
-      },
-    },
-  });
+) => sendDirectMessageAttachment(accessToken, pageId, recipientId, 'audio', audioUrl);
 
-  return response.data;
+/**
+ * Tenta obter o ID da Page do Facebook ligada à conta Instagram (token pode ser Instagram ou híbrido).
+ * Ref: https://developers.facebook.com/docs/graph-api/reference/page/subscribed_apps/
+ */
+export const getLinkedFacebookPageId = async (
+  accessToken: string,
+  instagramAccountId: string
+): Promise<string | null> => {
+  try {
+    const base = META_CONFIG.FACEBOOK_GRAPH_BASE;
+    const version = META_CONFIG.GRAPH_VERSION;
+    const url = `${base}/${version}/me/accounts`;
+    const { data } = await axios.get<{
+      data?: Array<{
+        id: string;
+        name?: string;
+        instagram_business_account?: { id: string };
+      }>;
+    }>(url, {
+      params: {
+        fields: 'id,name,instagram_business_account{id}',
+        access_token: accessToken,
+      },
+      timeout: 10000,
+    });
+    const pages = data?.data;
+    if (!Array.isArray(pages)) return null;
+    const page = pages.find(
+      (p) => p.instagram_business_account?.id === instagramAccountId
+    );
+    return page?.id ?? null;
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Inscreve o app na Page/perfil para receber webhooks (comments, messages, etc.).
+ * Ref: https://developers.facebook.com/docs/graph-api/webhooks/getting-started/webhooks-for-instagram/
+ */
+export const subscribePageToApp = async (
+  pageIdOrIgUserId: string,
+  accessToken: string,
+  subscribedFields: string = META_CONFIG.SUBSCRIBED_FIELDS
+): Promise<boolean> => {
+  try {
+    const base = META_CONFIG.FACEBOOK_GRAPH_BASE;
+    const version = META_CONFIG.GRAPH_VERSION;
+    const url = `${base}/${version}/${pageIdOrIgUserId}/subscribed_apps`;
+    await axios.post(
+      url,
+      {},
+      {
+        params: {
+          access_token: accessToken,
+          subscribed_fields: subscribedFields,
+        },
+        timeout: 15000,
+      }
+    );
+    return true;
+  } catch (err) {
+    throw toMetaError(err, 'subscribed_apps');
+  }
 };

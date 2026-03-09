@@ -15,6 +15,18 @@ export interface UpdateInstanceData {
   status?: 'created' | 'connecting' | 'connected' | 'disconnected' | 'error';
 }
 
+export interface ConnectInstanceData {
+  instagramAccountId: string;
+  username: string;
+  profilePictureUrl?: string;
+  accessToken: string;
+  pageId: string;
+  pageName: string;
+  tokenExpiresAt: Date;
+  webhookIds?: string[];
+  name?: string;
+}
+
 export class InstanceService {
   /**
    * Criar nova instância
@@ -103,17 +115,7 @@ export class InstanceService {
   static async connectInstance(
     id: string,
     userId: string,
-    data: {
-      instagramAccountId: string;
-      username: string;
-      profilePictureUrl?: string;
-      accessToken: string;
-      pageId: string;
-      pageName: string;
-      tokenExpiresAt: Date;
-      webhookIds?: string[];
-      name?: string; // Nome da instância (geralmente o username)
-    }
+    data: ConnectInstanceData
   ): Promise<IInstagramInstance | null> {
     const instance = await InstagramInstance.findOneAndUpdate(
       { _id: id, userId },
