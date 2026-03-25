@@ -18,5 +18,6 @@ router.put('/:id', instanceController.updateInstance);
 router.delete('/:id', instanceController.deleteInstance);
 router.get('/:id/oauth', instanceController.initiateOAuth);
 router.post('/:id/refresh-token', instanceController.refreshToken);
+router.post('/:id/messages', instanceController.sendDirectMessageFromInstance);
 
 export default router;

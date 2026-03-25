@@ -12,6 +12,10 @@ import {
   getInstagramAccountInfo,
   getLinkedFacebookPageId,
   subscribePageToApp,
+  sendDirectMessage,
+  sendDirectMessageImage,
+  sendDirectMessageVideo,
+  sendDirectMessageAudio,
 } from '../services/metaAPIService';
 import { META_CONFIG, FRONTEND_URL, INSTANCE_STATUSES } from '../config/constants';
 import { emitInstagramUpdate } from '../socket/socketClient';
@@ -24,6 +28,13 @@ interface CreateInstanceBody {
 interface UpdateInstanceBody {
   name?: string;
   status?: 'created' | 'connecting' | 'connected' | 'disconnected' | 'error';
+}
+
+interface SendDirectMessageBody {
+  recipientId?: string;
+  text?: string;
+  mediaType?: 'image' | 'video' | 'audio';
+  mediaUrl?: string;
 }
 
 /**
@@ -351,5 +362,73 @@ export const refreshToken = async (
     });
   } catch (error: unknown) {
     return next(handleControllerError(error, 'Erro ao renovar token'));
+  }
+};
+
+/**
+ * Enviar DM manual para um usuário Instagram usando a instância conectada
+ */
+export const sendDirectMessageFromInstance = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const userId = req.user?.id;
+    const { id } = req.params;
+    const { recipientId, text, mediaType, mediaUrl }: SendDirectMessageBody = req.body;
+
+    if (!userId) {
+      return next(createValidationError('Usuário não autenticado'));
+    }
+    if (!recipientId || recipientId.trim().length === 0) {
+      return next(createValidationError('recipientId é obrigatório'));
+    }
+
+    const instance = await InstanceService.getById(id, userId);
+    if (!instance) {
+      return next(createNotFoundError('Instância'));
+    }
+    if (!instance.accessToken) {
+      return next(createValidationError('Instância sem token de acesso'));
+    }
+
+    let apiResponse: any;
+    if (mediaType && mediaUrl) {
+      const pageId = instance.instagramAccountId;
+      if (!pageId) {
+        return next(createValidationError('Instância sem instagramAccountId'));
+      }
+      if (mediaType === 'image') {
+        apiResponse = await sendDirectMessageImage(instance.accessToken, pageId, recipientId, mediaUrl);
+      } else if (mediaType === 'video') {
+        apiResponse = await sendDirectMessageVideo(instance.accessToken, pageId, recipientId, mediaUrl);
+      } else if (mediaType === 'audio') {
+        apiResponse = await sendDirectMessageAudio(instance.accessToken, pageId, recipientId, mediaUrl);
+      } else {
+        return next(createValidationError('mediaType inválido'));
+      }
+    } else {
+      if (!text || text.trim().length === 0) {
+        return next(createValidationError('text é obrigatório para mensagem de texto'));
+      }
+      apiResponse = await sendDirectMessage(instance.accessToken, recipientId, text.trim());
+    }
+
+    const messageId =
+      apiResponse?.message_id ||
+      apiResponse?.id ||
+      apiResponse?.mid ||
+      `ig_${Date.now()}`;
+
+    res.status(200).json({
+      status: 'success',
+      data: {
+        messageId,
+        raw: apiResponse,
+      },
+    });
+  } catch (error: unknown) {
+    return next(handleControllerError(error, 'Erro ao enviar DM Instagram'));
   }
 };

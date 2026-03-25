@@ -32,6 +32,136 @@ interface CommentChangeValue {
   media?: { id?: string };
 }
 
+interface CrmMirrorResult {
+  contactId: string;
+  message: {
+    id: string;
+    messageId: string;
+    channel: 'instagram';
+    fromMe: boolean;
+    messageType: string;
+    content: string;
+    mediaUrl: string | null;
+    timestamp: string;
+    read: boolean;
+  };
+}
+
+function toDateFromUnix(value: number | undefined): Date {
+  if (!value) return new Date();
+  // Instagram normalmente envia em ms; fallback para segundos.
+  if (value > 1_000_000_000_000) return new Date(value);
+  return new Date(value * 1000);
+}
+
+async function ensureCrmDefaultColumns(userId: string): Promise<string | null> {
+  const existing = await pgPool.query<{ id: string }>(
+    `SELECT id FROM crm_columns WHERE user_id = $1 ORDER BY order_index ASC LIMIT 1`,
+    [userId]
+  );
+  if (existing.rows[0]?.id) return existing.rows[0].id;
+
+  const defaults = [
+    { name: 'Não iniciado', order: 0, color: '#808080' },
+    { name: 'Em andamento', order: 1, color: '#4A90E2' },
+    { name: 'Aguardando', order: 2, color: '#F5A623' },
+    { name: 'Concluído', order: 3, color: '#7ED321' },
+    { name: 'Não tenho interesse', order: 4, color: '#D0021B' },
+  ];
+
+  for (const item of defaults) {
+    await pgPool.query(
+      `INSERT INTO crm_columns (user_id, name, order_index, color)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT DO NOTHING`,
+      [userId, item.name, item.order, item.color]
+    );
+  }
+
+  const created = await pgPool.query<{ id: string }>(
+    `SELECT id FROM crm_columns WHERE user_id = $1 ORDER BY order_index ASC LIMIT 1`,
+    [userId]
+  );
+  return created.rows[0]?.id ?? null;
+}
+
+async function mirrorInstagramDmToCrm(params: {
+  instanceId: string;
+  userId: string;
+  senderId: string;
+  messageId: string;
+  messageText: string;
+  timestampUnix?: number;
+}): Promise<CrmMirrorResult | null> {
+  const remoteJid = `${params.senderId}@instagram`;
+  const defaultColumnId = await ensureCrmDefaultColumns(params.userId);
+  if (!defaultColumnId) return null;
+
+  const contactResult = await pgPool.query<{ id: string }>(
+    `INSERT INTO contacts (
+      user_id, instance_id, channel, remote_jid, phone, name, column_id, unread_count
+    ) VALUES ($1, $2, 'instagram', $3, $4, $5, $6, 0)
+    ON CONFLICT (user_id, instance_id, remote_jid, channel)
+    DO UPDATE SET name = EXCLUDED.name
+    RETURNING id`,
+    [
+      params.userId,
+      params.instanceId,
+      remoteJid,
+      params.senderId,
+      params.senderId,
+      defaultColumnId,
+    ]
+  );
+  const contactId = contactResult.rows[0]?.id;
+  if (!contactId) return null;
+
+  const msgTimestamp = toDateFromUnix(params.timestampUnix);
+  const messageResult = await pgPool.query<{
+    id: string;
+    message_id: string;
+    from_me: boolean;
+    message_type: string;
+    content: string;
+    media_url: string | null;
+    timestamp: Date;
+    read: boolean;
+  }>(
+    `INSERT INTO messages (
+      user_id, instance_id, contact_id, channel, remote_jid,
+      message_id, from_me, message_type, content, media_url, timestamp, read
+    ) VALUES ($1, $2, $3, 'instagram', $4, $5, FALSE, 'conversation', $6, NULL, $7, FALSE)
+    ON CONFLICT (message_id, instance_id) DO UPDATE SET content = EXCLUDED.content
+    RETURNING id, message_id, from_me, message_type, content, media_url, timestamp, read`,
+    [
+      params.userId,
+      params.instanceId,
+      contactId,
+      remoteJid,
+      params.messageId,
+      params.messageText || '',
+      msgTimestamp,
+    ]
+  );
+  const saved = messageResult.rows[0];
+  if (!saved) return null;
+
+  return {
+    contactId,
+    message: {
+      id: saved.id,
+      messageId: saved.message_id,
+      channel: 'instagram',
+      fromMe: saved.from_me,
+      messageType: saved.message_type,
+      content: saved.content,
+      mediaUrl: saved.media_url,
+      timestamp: saved.timestamp.toISOString(),
+      read: saved.read,
+    },
+  };
+}
+
 /** Retorna a instância com accessToken para chamadas à API, ou null. */
 async function getInstanceWithToken(
   instagramAccountId: string
@@ -240,11 +370,22 @@ export const processDirectMessage = async (
       }
     }
 
-    // Emitir atualização via Socket.io
+    const crmMirrored = await mirrorInstagramDmToCrm({
+      instanceId,
+      userId,
+      senderId,
+      messageId,
+      messageText,
+      timestampUnix: event.timestamp,
+    });
+
+    // Emitir atualização via Socket.io (backend principal vai reemitir para CRM)
     emitInstagramUpdate(userId, {
       type: 'message',
       instanceId,
       messageId,
+      contactId: crmMirrored?.contactId,
+      message: crmMirrored?.message,
     });
   } catch (error) {
     console.error('❌ Erro ao processar mensagem direta:', error);
