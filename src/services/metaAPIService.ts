@@ -149,6 +149,31 @@ export const getInstagramAccountInfo = async (accessToken: string): Promise<{
 };
 
 /**
+ * Perfil do remetente em DMs (Instagram-scoped ID do webhook → nome, @username, foto).
+ * Requer token IG da conta profissional + consentimento após a pessoa enviar mensagem.
+ * Ref: User Profile API (Messaging)
+ */
+export const getInstagramMessagingUserProfile = async (
+  accessToken: string,
+  instagramScopedUserId: string
+): Promise<{ name?: string; username?: string; profile_pic?: string } | null> => {
+  try {
+    const id = String(instagramScopedUserId).trim();
+    if (!id) return null;
+    const response = await requestMetaAPI('GET', `/${encodeURIComponent(id)}`, accessToken, {
+      fields: 'name,username,profile_pic',
+    });
+    return response.data as { name?: string; username?: string; profile_pic?: string };
+  } catch (error) {
+    console.warn(
+      '[Meta API] Perfil do remetente (IG Messaging):',
+      error instanceof Error ? error.message : error
+    );
+    return null;
+  }
+};
+
+/**
  * Renovar long-lived token
  */
 export const refreshLongLivedToken = async (accessToken: string): Promise<{
@@ -265,26 +290,27 @@ export const sendDirectMessageAudio = (
 ) => sendDirectMessageAttachment(accessToken, pageId, recipientId, 'audio', audioUrl);
 
 /**
- * Tenta obter o ID da Page do Facebook ligada à conta Instagram (token pode ser Instagram ou híbrido).
+ * Page do Facebook ligada ao IG + token de Page (necessário para subscribed_apps em graph.facebook.com).
  * Ref: https://developers.facebook.com/docs/graph-api/reference/page/subscribed_apps/
  */
-export const getLinkedFacebookPageId = async (
+export const getLinkedFacebookPageForInstagram = async (
   accessToken: string,
   instagramAccountId: string
-): Promise<string | null> => {
+): Promise<{ pageId: string; pageAccessToken: string } | null> => {
   try {
     const base = META_CONFIG.FACEBOOK_GRAPH_BASE;
     const version = META_CONFIG.GRAPH_VERSION;
     const url = `${base}/${version}/me/accounts`;
+    const igId = String(instagramAccountId);
     const { data } = await axios.get<{
       data?: Array<{
         id: string;
-        name?: string;
+        access_token?: string;
         instagram_business_account?: { id: string };
       }>;
     }>(url, {
       params: {
-        fields: 'id,name,instagram_business_account{id}',
+        fields: 'id,access_token,instagram_business_account{id}',
         access_token: accessToken,
       },
       timeout: 10000,
@@ -292,12 +318,36 @@ export const getLinkedFacebookPageId = async (
     const pages = data?.data;
     if (!Array.isArray(pages)) return null;
     const page = pages.find(
-      (p) => p.instagram_business_account?.id === instagramAccountId
+      (p) => String(p.instagram_business_account?.id || '') === igId
     );
-    return page?.id ?? null;
+    if (!page?.id || !page.access_token) return null;
+    return { pageId: page.id, pageAccessToken: page.access_token };
   } catch {
     return null;
   }
+};
+
+/**
+ * Inscrição em webhooks no Instagram Graph (fluxo Instagram Login).
+ * O token de usuário IG não deve ir como Bearer aqui — use access_token na query (evita OAuth 190).
+ * Ref: https://developers.facebook.com/docs/instagram-api/guides/webhooks#enable-subscriptions
+ */
+export const subscribeInstagramSubscribedApps = async (
+  instagramUserId: string,
+  accessToken: string,
+  subscribedFields: string = 'comments,messages'
+): Promise<void> => {
+  const baseUrl = META_CONFIG.BASE_URL;
+  const version = META_CONFIG.GRAPH_VERSION;
+  const id = String(instagramUserId).trim();
+  const url = `${baseUrl}/${version}/${id}/subscribed_apps`;
+  await axios.post(url, null, {
+    params: {
+      access_token: accessToken,
+      subscribed_fields: subscribedFields,
+    },
+    timeout: 15000,
+  });
 };
 
 /**

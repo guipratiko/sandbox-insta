@@ -7,6 +7,7 @@ import InstagramInstance from '../models/InstagramInstance';
 import { AutomationService } from './automationService';
 import { ReportService } from './reportService';
 import { META_CONFIG } from '../config/constants';
+import { emitInstagramInstanceUpdated } from '../socket/socketClient';
 
 interface DecodedSignedRequest {
   user_id?: string;
@@ -113,6 +114,16 @@ export async function handleDeauthorization(signedRequest: string): Promise<{
     await instance.save();
 
     console.log(`✅ Instância ${instance.instanceName} desautorizada com sucesso`);
+
+    try {
+      emitInstagramInstanceUpdated(
+        instance.userId.toString(),
+        instance._id.toString(),
+        'disconnected'
+      );
+    } catch {
+      /* socket opcional */
+    }
 
     return {
       success: true,
@@ -242,6 +253,12 @@ export async function handleDataDeletion(signedRequest: string): Promise<{
     await InstagramInstance.findByIdAndDelete(instanceDoc._id);
 
     console.log(`✅ Instância ${instance.instanceName} e dados relacionados deletados com sucesso`);
+
+    try {
+      emitInstagramInstanceUpdated(instanceUserId, instanceId, 'deleted');
+    } catch {
+      /* socket opcional */
+    }
 
     return {
       success: true,

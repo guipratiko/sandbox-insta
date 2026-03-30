@@ -120,6 +120,31 @@ export const emitInstagramUpdate = (userId: string, data: unknown): void => {
 };
 
 /**
+ * Status da instância Instagram no Mongo (ex.: disconnected pelo Meta, deleted).
+ * O backend re-emite para o frontend na sala do usuário.
+ */
+export const emitInstagramInstanceUpdated = (
+  userId: string,
+  instanceId: string,
+  status: string
+): void => {
+  const eventData = { userId, instanceId, status };
+
+  if (!socket) {
+    connectSocket();
+  }
+
+  if (socket && isConnected) {
+    socket.emit('instagram-instance-updated', eventData);
+  } else {
+    pendingEvents.push({
+      event: 'instagram-instance-updated',
+      data: eventData,
+    });
+  }
+};
+
+/**
  * Desconectar do Socket.io
  */
 export const disconnectSocket = (): void => {

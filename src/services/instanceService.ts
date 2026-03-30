@@ -65,6 +65,13 @@ export class InstanceService {
   }
 
   /**
+   * Instância com accessToken (envio de DM pelo CRM).
+   */
+  static async getByIdWithToken(id: string, userId: string): Promise<IInstagramInstance | null> {
+    return InstagramInstance.findOne({ _id: id, userId }).select('+accessToken');
+  }
+
+  /**
    * Obter instância por ID apenas (usado no callback OAuth)
    */
   static async getByIdOnly(id: string): Promise<IInstagramInstance | null> {

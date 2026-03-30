@@ -10,15 +10,12 @@ import {
   exchangeCodeForToken,
   exchangeForLongLivedToken,
   getInstagramAccountInfo,
-  getLinkedFacebookPageId,
+  getLinkedFacebookPageForInstagram,
+  subscribeInstagramSubscribedApps,
   subscribePageToApp,
-  sendDirectMessage,
-  sendDirectMessageImage,
-  sendDirectMessageVideo,
-  sendDirectMessageAudio,
 } from '../services/metaAPIService';
 import { META_CONFIG, FRONTEND_URL, INSTANCE_STATUSES } from '../config/constants';
-import { emitInstagramUpdate } from '../socket/socketClient';
+import { emitInstagramInstanceUpdated, emitInstagramUpdate } from '../socket/socketClient';
 import { formatInstance, formatInstanceList } from '../utils/instanceFormatters';
 
 interface CreateInstanceBody {
@@ -28,13 +25,6 @@ interface CreateInstanceBody {
 interface UpdateInstanceBody {
   name?: string;
   status?: 'created' | 'connecting' | 'connected' | 'disconnected' | 'error';
-}
-
-interface SendDirectMessageBody {
-  recipientId?: string;
-  text?: string;
-  mediaType?: 'image' | 'video' | 'audio';
-  mediaUrl?: string;
 }
 
 /**
@@ -154,6 +144,14 @@ export const updateInstance = async (
       return next(createNotFoundError('Instância'));
     }
 
+    if (updateData.status) {
+      try {
+        emitInstagramInstanceUpdated(userId, id, updateData.status);
+      } catch {
+        /* socket opcional */
+      }
+    }
+
     res.status(200).json({
       status: 'success',
       data: formatInstance(instance),
@@ -183,6 +181,12 @@ export const deleteInstance = async (
 
     if (!deleted) {
       return next(createNotFoundError('Instância'));
+    }
+
+    try {
+      emitInstagramInstanceUpdated(userId, id, 'deleted');
+    } catch {
+      /* socket opcional */
     }
 
     res.status(200).json({
@@ -293,18 +297,38 @@ export const handleOAuthCallback = async (
     );
 
     try {
-      let pageIdForSubscribe = igAccountId;
-      const linkedPageId = await getLinkedFacebookPageId(
+      const linked = await getLinkedFacebookPageForInstagram(
         longLivedTokenData.access_token,
-        igAccountId
+        String(igAccountId)
       );
-      if (linkedPageId) pageIdForSubscribe = linkedPageId;
-      await subscribePageToApp(
-        pageIdForSubscribe,
-        longLivedTokenData.access_token,
-        META_CONFIG.SUBSCRIBED_FIELDS
-      );
-      console.log('[Instagram OAuth] subscribed_apps ok', { objectId: pageIdForSubscribe });
+      let subscribedOk = false;
+      if (linked) {
+        try {
+          await subscribePageToApp(
+            linked.pageId,
+            linked.pageAccessToken,
+            META_CONFIG.SUBSCRIBED_FIELDS
+          );
+          console.log('[Instagram OAuth] subscribed_apps ok (Page + page token)', {
+            pageId: linked.pageId,
+          });
+          subscribedOk = true;
+        } catch (pageErr) {
+          console.warn(
+            '[Instagram OAuth] subscribed_apps na Page falhou, tentando Instagram Graph:',
+            pageErr instanceof Error ? pageErr.message : pageErr
+          );
+        }
+      }
+      if (!subscribedOk) {
+        await subscribeInstagramSubscribedApps(
+          String(igAccountId),
+          longLivedTokenData.access_token
+        );
+        console.log('[Instagram OAuth] subscribed_apps ok (Instagram Graph + access_token query)', {
+          igUserId: String(igAccountId),
+        });
+      }
     } catch (subErr) {
       console.warn(
         '[Instagram OAuth] subscribed_apps:',
@@ -316,6 +340,15 @@ export const handleOAuthCallback = async (
       instanceId: instance._id.toString(),
       status: 'connected',
     });
+    try {
+      emitInstagramInstanceUpdated(
+        instance.userId.toString(),
+        instance._id.toString(),
+        'connected'
+      );
+    } catch {
+      /* socket opcional */
+    }
 
     console.log('[Instagram OAuth] Conectado:', accountInfo.username, 'instance:', instance.instanceName);
     return res.redirect(`${redirectBase}?connected=success&tab=instagram`);
@@ -362,73 +395,5 @@ export const refreshToken = async (
     });
   } catch (error: unknown) {
     return next(handleControllerError(error, 'Erro ao renovar token'));
-  }
-};
-
-/**
- * Enviar DM manual para um usuário Instagram usando a instância conectada
- */
-export const sendDirectMessageFromInstance = async (
-  req: AuthRequest,
-  res: Response,
-  next: NextFunction
-): Promise<void> => {
-  try {
-    const userId = req.user?.id;
-    const { id } = req.params;
-    const { recipientId, text, mediaType, mediaUrl }: SendDirectMessageBody = req.body;
-
-    if (!userId) {
-      return next(createValidationError('Usuário não autenticado'));
-    }
-    if (!recipientId || recipientId.trim().length === 0) {
-      return next(createValidationError('recipientId é obrigatório'));
-    }
-
-    const instance = await InstanceService.getById(id, userId);
-    if (!instance) {
-      return next(createNotFoundError('Instância'));
-    }
-    if (!instance.accessToken) {
-      return next(createValidationError('Instância sem token de acesso'));
-    }
-
-    let apiResponse: any;
-    if (mediaType && mediaUrl) {
-      const pageId = instance.instagramAccountId;
-      if (!pageId) {
-        return next(createValidationError('Instância sem instagramAccountId'));
-      }
-      if (mediaType === 'image') {
-        apiResponse = await sendDirectMessageImage(instance.accessToken, pageId, recipientId, mediaUrl);
-      } else if (mediaType === 'video') {
-        apiResponse = await sendDirectMessageVideo(instance.accessToken, pageId, recipientId, mediaUrl);
-      } else if (mediaType === 'audio') {
-        apiResponse = await sendDirectMessageAudio(instance.accessToken, pageId, recipientId, mediaUrl);
-      } else {
-        return next(createValidationError('mediaType inválido'));
-      }
-    } else {
-      if (!text || text.trim().length === 0) {
-        return next(createValidationError('text é obrigatório para mensagem de texto'));
-      }
-      apiResponse = await sendDirectMessage(instance.accessToken, recipientId, text.trim());
-    }
-
-    const messageId =
-      apiResponse?.message_id ||
-      apiResponse?.id ||
-      apiResponse?.mid ||
-      `ig_${Date.now()}`;
-
-    res.status(200).json({
-      status: 'success',
-      data: {
-        messageId,
-        raw: apiResponse,
-      },
-    });
-  } catch (error: unknown) {
-    return next(handleControllerError(error, 'Erro ao enviar DM Instagram'));
   }
 };
