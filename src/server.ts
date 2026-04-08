@@ -1,5 +1,5 @@
 /**
- * Servidor principal do microserviço Insta-Clerky
+ * Servidor principal do microserviço Instagram (OnlyFlow)
  */
 
 // Configurar timezone
@@ -36,7 +36,7 @@ connectAllDatabases();
 app.get('/', (req: Request, res: Response) => {
   res.json({
     status: 'ok',
-    message: 'Insta-Clerky API está funcionando',
+    message: 'OnlyFlow — API Instagram está funcionando',
     version: process.env.VERSION || packageJson.version || '1.0.0',
     timestamp: new Date().toISOString(),
     endpoints: {
@@ -70,7 +70,7 @@ startTokenRefreshScheduler();
 
 // Iniciar servidor
 httpServer.listen(PORT, () => {
-  console.log(`🚀 Servidor Insta-Clerky rodando na porta ${PORT}`);
+  console.log(`🚀 Servidor Instagram (OnlyFlow) rodando na porta ${PORT}`);
   console.log(`📡 Ambiente: ${SERVER_CONFIG.NODE_ENV}`);
   console.log(`🌐 API disponível em http://localhost:${PORT}/api`);
 });

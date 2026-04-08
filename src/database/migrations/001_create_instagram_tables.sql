@@ -1,5 +1,5 @@
 -- Migration: Criar tabelas do Instagram (mensagens, comentários, automações, relatórios)
--- Este arquivo cria toda a estrutura base do sistema Insta-Clerky
+-- Este arquivo cria toda a estrutura base do CRM Instagram (OnlyFlow)
 
 -- Habilitar extensão UUID (se ainda não estiver habilitada)
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
@@ -126,7 +126,7 @@ DROP TRIGGER IF EXISTS trigger_update_instagram_messages_updated_at ON instagram
 CREATE TRIGGER trigger_update_instagram_messages_updated_at
 BEFORE UPDATE ON instagram_messages
 FOR EACH ROW
-EXECUTE FUNCTION update_instagram_messages_updated_at();
+EXECUTE PROCEDURE update_instagram_messages_updated_at();
 
 CREATE OR REPLACE FUNCTION update_instagram_comments_updated_at()
 RETURNS TRIGGER AS $$
@@ -140,7 +140,7 @@ DROP TRIGGER IF EXISTS trigger_update_instagram_comments_updated_at ON instagram
 CREATE TRIGGER trigger_update_instagram_comments_updated_at
 BEFORE UPDATE ON instagram_comments
 FOR EACH ROW
-EXECUTE FUNCTION update_instagram_comments_updated_at();
+EXECUTE PROCEDURE update_instagram_comments_updated_at();
 
 CREATE OR REPLACE FUNCTION update_instagram_automations_updated_at()
 RETURNS TRIGGER AS $$
@@ -154,4 +154,4 @@ DROP TRIGGER IF EXISTS trigger_update_instagram_automations_updated_at ON instag
 CREATE TRIGGER trigger_update_instagram_automations_updated_at
 BEFORE UPDATE ON instagram_automations
 FOR EACH ROW
-EXECUTE FUNCTION update_instagram_automations_updated_at();
+EXECUTE PROCEDURE update_instagram_automations_updated_at();

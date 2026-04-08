@@ -1,5 +1,5 @@
 /**
- * Configurações centralizadas do microserviço Insta-Clerky
+ * Configurações centralizadas do microserviço Instagram (OnlyFlow)
  */
 
 import dotenv from 'dotenv';

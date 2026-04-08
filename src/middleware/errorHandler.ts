@@ -16,7 +16,7 @@ export const errorHandler = (
   const status = err.status || 'error';
 
   if (statusCode >= 500) {
-    console.error('❌ [Insta-Clerky] Erro:', err.message);
+    console.error('❌ [Instagram OnlyFlow] Erro:', err.message);
     console.error('   Stack:', err.stack);
   }
 

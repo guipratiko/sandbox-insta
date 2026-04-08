@@ -8,7 +8,7 @@ import { join } from 'path';
 import { pgPool } from '../config/databases';
 
 async function runMigrations() {
-  console.log('🔄 Iniciando migrations do Insta-Clerky...');
+  console.log('🔄 Iniciando migrations do microserviço Instagram (OnlyFlow)...');
 
   try {
     const migrationsDir = join(__dirname, '../database/migrations');
