@@ -1,62 +1,50 @@
 /**
- * Cliente Socket.io para integrar com o backend principal
- * Emite eventos de atualização do Instagram para o frontend via backend principal
+ * Cliente Socket.io para integrar com o backend principal.
+ * Emite instagram-updated / instagram-instance-updated para o CRM em tempo real.
+ *
+ * Em Node (Docker/PaaS), WebSocket primeiro costuma falhar; polling primeiro + timeout maior.
  */
 
 import { io, Socket } from 'socket.io-client';
 import { SOCKET_CONFIG } from '../config/constants';
 
 let socket: Socket | null = null;
-let isConnected = false;
-let hasWarnedAboutConnection = false;
-let reconnectAttempts = 0;
-const MAX_RECONNECT_ATTEMPTS = 3;
+const pendingEvents: PendingEvent[] = [];
 
-// Fila de eventos para emitir quando o socket estiver conectado
 interface PendingEvent {
   event: string;
   data: unknown;
 }
 
-const pendingEvents: PendingEvent[] = [];
+const SOCKET_TIMEOUT_MS = parseInt(process.env.SOCKET_IO_TIMEOUT_MS || '20000', 10);
+const SOCKET_RECONNECT_ATTEMPTS = parseInt(process.env.SOCKET_IO_RECONNECT_ATTEMPTS || '15', 10);
+
+let lastConnectErrorLog = 0;
+const CONNECT_ERROR_LOG_INTERVAL_MS = 60_000;
 
 /**
- * Conectar ao servidor Socket.io do backend principal
- * Nota: O Socket.io é opcional - se não conectar, o sistema continua funcionando
- * mas não emite atualizações em tempo real para o frontend
+ * Conectar ao servidor Socket.io do backend principal.
+ * Microserviço sem JWT: o backend aceita conexão sem token para estes emits.
  */
 export const connectSocket = (): void => {
-  if (socket && isConnected) {
-    return;
-  }
-
-  // Se já tentou muitas vezes, não tentar mais
-  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
-    if (!hasWarnedAboutConnection) {
-      console.warn('⚠️ Socket.io: Muitas tentativas de reconexão falharam. Desabilitando reconexão automática.');
-      hasWarnedAboutConnection = true;
-    }
+  if (socket) {
     return;
   }
 
   try {
-    // Socket.io é opcional - não requer autenticação para o microserviço
     socket = io(SOCKET_CONFIG.URL, {
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'],
+      upgrade: true,
       reconnection: true,
       reconnectionDelay: 2000,
-      reconnectionDelayMax: 10000,
-      reconnectionAttempts: MAX_RECONNECT_ATTEMPTS,
-      timeout: 5000,
+      reconnectionDelayMax: 15000,
+      reconnectionAttempts: SOCKET_RECONNECT_ATTEMPTS,
+      timeout: SOCKET_TIMEOUT_MS,
+      path: process.env.SOCKET_IO_PATH || '/socket.io/',
     });
 
     socket.on('connect', () => {
-      isConnected = true;
-      reconnectAttempts = 0;
-      hasWarnedAboutConnection = false;
-      console.log('✅ Conectado ao Socket.io do backend principal');
-      
-      // Emitir eventos pendentes
+      console.log('[Insta-Clerky] Socket.io conectado ao backend');
       while (pendingEvents.length > 0) {
         const event = pendingEvents.shift();
         if (event && socket) {
@@ -65,53 +53,30 @@ export const connectSocket = (): void => {
       }
     });
 
-    socket.on('disconnect', () => {
-      isConnected = false;
-    });
-
     socket.on('connect_error', (error) => {
-      reconnectAttempts++;
-      if (!hasWarnedAboutConnection) {
-        if (error.message.includes('Token')) {
-          console.warn('⚠️ Socket.io requer autenticação. Atualizações em tempo real podem não funcionar.');
-        } else {
-          console.warn('⚠️ Erro ao conectar ao Socket.io:', error.message);
-        }
-        hasWarnedAboutConnection = true;
-      }
-    });
-
-    socket.on('reconnect_attempt', (attemptNumber) => {
-      if (attemptNumber >= MAX_RECONNECT_ATTEMPTS) {
-        console.warn(`⚠️ Socket.io: Limite de tentativas de reconexão atingido (${MAX_RECONNECT_ATTEMPTS}).`);
+      const now = Date.now();
+      if (now - lastConnectErrorLog >= CONNECT_ERROR_LOG_INTERVAL_MS) {
+        lastConnectErrorLog = now;
+        console.warn(
+          `[Insta-Clerky] Socket.io: ${error.message} — confira SOCKET_URL/BACKEND_SOCKET_URL (https em produção)`
+        );
       }
     });
   } catch (error) {
-    reconnectAttempts++;
-    console.error('❌ Erro ao inicializar Socket.io:', error);
+    console.error('[Insta-Clerky] Erro ao iniciar Socket.io:', error);
   }
 };
 
-/**
- * Emitir evento de atualização do Instagram
- * O backend principal irá re-emitir para o frontend
- */
 export const emitInstagramUpdate = (userId: string, data: unknown): void => {
-  const eventData = {
-    userId,
-    data,
-  };
+  const eventData = { userId, data };
 
-  // Tentar conectar se não estiver conectado
   if (!socket) {
     connectSocket();
   }
 
-  // Se estiver conectado, emitir imediatamente
-  if (socket && isConnected) {
+  if (socket?.connected) {
     socket.emit('instagram-updated', eventData);
   } else {
-    // Se não estiver conectado, adicionar à fila
     pendingEvents.push({
       event: 'instagram-updated',
       data: eventData,
@@ -119,10 +84,6 @@ export const emitInstagramUpdate = (userId: string, data: unknown): void => {
   }
 };
 
-/**
- * Status da instância Instagram no Mongo (ex.: disconnected pelo Meta, deleted).
- * O backend re-emite para o frontend na sala do usuário.
- */
 export const emitInstagramInstanceUpdated = (
   userId: string,
   instanceId: string,
@@ -134,7 +95,7 @@ export const emitInstagramInstanceUpdated = (
     connectSocket();
   }
 
-  if (socket && isConnected) {
+  if (socket?.connected) {
     socket.emit('instagram-instance-updated', eventData);
   } else {
     pendingEvents.push({
@@ -144,13 +105,10 @@ export const emitInstagramInstanceUpdated = (
   }
 };
 
-/**
- * Desconectar do Socket.io
- */
 export const disconnectSocket = (): void => {
   if (socket) {
     socket.disconnect();
     socket = null;
-    isConnected = false;
   }
+  pendingEvents.length = 0;
 };

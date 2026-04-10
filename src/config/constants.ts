@@ -44,7 +44,9 @@ export const MONGODB_CONFIG = {
 
 // Socket.io Configuration (backend principal)
 export const SOCKET_CONFIG = {
-  URL: process.env.SOCKET_URL || 'http://localhost:4331',
+  URL: (process.env.BACKEND_SOCKET_URL || process.env.SOCKET_URL || 'http://localhost:4331')
+    .trim()
+    .replace(/\/$/, ''),
 };
 
 // Meta/Instagram API
