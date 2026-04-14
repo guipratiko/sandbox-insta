@@ -33,6 +33,7 @@ interface DirectMessageEvent {
     text?: string;
     is_echo?: boolean;
     attachments?: Array<{ type?: string; payload?: { url?: string } }>;
+    reply_to?: { story?: { url?: string; id?: string } };
   };
   timestamp?: number;
 }

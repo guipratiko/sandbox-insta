@@ -11,6 +11,10 @@ export interface IgWebhookAttachment {
 export interface IgWebhookMessage {
   text?: string;
   attachments?: IgWebhookAttachment[];
+  /** Resposta a um story no chat (Meta envia `reply_to.story` com URL da mídia). */
+  reply_to?: {
+    story?: { url?: string; id?: string };
+  };
 }
 
 export type InstagramCrmMessagePayload = {
@@ -40,7 +44,8 @@ const CRM_PLACEHOLDER: Record<string, string> = {
 
 /**
  * Monta content / message_type / media_url a partir do webhook Meta.
- * `story_mention`: texto legível no CRM + pré-visualização da imagem do story quando há URL.
+ * - `story_mention` (attachment): menção no story.
+ * - `reply_to.story`: utilizador respondeu / “repost” do teu story no DM (imagem em `url`).
  */
 export function buildInstagramCrmPayloadFromMessage(
   message: IgWebhookMessage | null | undefined,
@@ -48,6 +53,25 @@ export function buildInstagramCrmPayloadFromMessage(
 ): InstagramCrmMessagePayload {
   const text = (message?.text || '').trim();
   const attachments = message?.attachments || [];
+
+  const storyReply = message?.reply_to?.story;
+  if (storyReply && (storyReply.url?.trim() || storyReply.id)) {
+    const url = storyReply.url?.trim() || null;
+    const u = options?.senderUsername?.trim();
+    const handlePart = u
+      ? u.startsWith('@')
+        ? u
+        : `@${u}`
+      : null;
+    const line = handlePart
+      ? `${handlePart} repostou seu story`
+      : 'Repost pelo usuário';
+    return {
+      content: line,
+      messageType: url ? 'imageMessage' : 'conversation',
+      mediaUrl: url,
+    };
+  }
 
   for (const att of attachments) {
     const rawType = String(att?.type || '').toLowerCase();
