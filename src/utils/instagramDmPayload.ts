@@ -19,6 +19,11 @@ export type InstagramCrmMessagePayload = {
   mediaUrl: string | null;
 };
 
+export type BuildInstagramCrmPayloadOptions = {
+  /** Username do remetente (sem @) — User Profile API; usado em story_mention. */
+  senderUsername?: string | null;
+};
+
 const IG_TYPE_TO_CRM: Record<string, string> = {
   image: 'imageMessage',
   video: 'videoMessage',
@@ -34,13 +39,35 @@ const CRM_PLACEHOLDER: Record<string, string> = {
 };
 
 /**
- * Primeiro anexo com URL válida (Meta costuma enviar um por mensagem de mídia).
+ * Monta content / message_type / media_url a partir do webhook Meta.
+ * `story_mention`: texto legível no CRM + pré-visualização da imagem do story quando há URL.
  */
 export function buildInstagramCrmPayloadFromMessage(
-  message: IgWebhookMessage | null | undefined
+  message: IgWebhookMessage | null | undefined,
+  options?: BuildInstagramCrmPayloadOptions
 ): InstagramCrmMessagePayload {
   const text = (message?.text || '').trim();
   const attachments = message?.attachments || [];
+
+  for (const att of attachments) {
+    const rawType = String(att?.type || '').toLowerCase();
+    if (rawType === 'story_mention') {
+      const url = att?.payload?.url?.trim() || null;
+      const u = options?.senderUsername?.trim();
+      const handlePart = u
+        ? u.startsWith('@')
+          ? u
+          : `@${u}`
+        : 'Alguém';
+      const line = `${handlePart} mencionou você`;
+      return {
+        content: line,
+        messageType: url ? 'imageMessage' : 'conversation',
+        mediaUrl: url,
+      };
+    }
+  }
+
   let mediaUrl: string | null = null;
   let igType = '';
 

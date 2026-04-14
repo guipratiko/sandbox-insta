@@ -84,7 +84,16 @@ export const processDirectMessage = async (
       return;
     }
 
-    const igCrm = buildInstagramCrmPayloadFromMessage(message);
+    /** Perfil do remetente (para nome no CRM e @ em story_mention). Só inbound. */
+    let senderProfile: { name?: string; username?: string; profile_pic?: string } | null = null;
+    const igTokenEarly = (instance as { accessToken?: string }).accessToken;
+    if (senderId !== instance.instagramAccountId && igTokenEarly) {
+      senderProfile = await getInstagramMessagingUserProfile(igTokenEarly, senderId);
+    }
+
+    const igCrm = buildInstagramCrmPayloadFromMessage(message, {
+      senderUsername: senderProfile?.username ?? null,
+    });
     const messageTextForAutomation = (message.text || '').trim();
     const storedSummaryText = igCrm.content;
     const messageId = message.mid;
@@ -113,12 +122,7 @@ export const processDirectMessage = async (
 
     let crmSync: Awaited<ReturnType<typeof syncInstagramInboundDmToCrm>> = null;
     if (senderId !== instance.instagramAccountId) {
-      let profile: { name?: string; username?: string; profile_pic?: string } | null = null;
-      const igToken = (instance as { accessToken?: string }).accessToken;
-      if (igToken) {
-        profile = await getInstagramMessagingUserProfile(igToken, senderId);
-      }
-      const displayName = formatIgContactDisplayName(profile);
+      const displayName = formatIgContactDisplayName(senderProfile);
       crmSync = await syncInstagramInboundDmToCrm({
         userId,
         instanceId,
@@ -129,7 +133,7 @@ export const processDirectMessage = async (
         mediaUrl: igCrm.mediaUrl,
         timestamp,
         contactDisplayName: displayName,
-        profilePictureUrl: profile?.profile_pic ?? null,
+        profilePictureUrl: senderProfile?.profile_pic ?? null,
       });
     }
 

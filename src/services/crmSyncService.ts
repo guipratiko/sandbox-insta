@@ -340,7 +340,9 @@ export async function backfillInstagramHistoryToCrm(instance: IInstanceForCrmBac
             : (raw as { message?: { text?: string; attachments?: unknown[] } });
         const m = obj?.message;
         if (m && typeof m === 'object') {
-          const b = buildInstagramCrmPayloadFromMessage(m as IgWebhookMessage);
+          const b = buildInstagramCrmPayloadFromMessage(m as IgWebhookMessage, {
+            senderUsername: prof?.username ?? null,
+          });
           text = b.content;
           messageType = b.messageType;
           mediaUrl = b.mediaUrl;
