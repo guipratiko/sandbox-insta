@@ -1,0 +1,3 @@
+# Se continuar a usar Nixpacks: menos pacotes que npm ci completo (omit=dev) e flags de CI.
+[phases.install]
+cmds = ["npm ci --omit=dev --no-audit --fund=false"]
