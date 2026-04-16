@@ -33,6 +33,7 @@ interface DirectMessageEvent {
     text?: string;
     is_echo?: boolean;
     attachments?: Array<{ type?: string; payload?: { url?: string } }>;
+    reply_to?: { story?: { url?: string; id?: string } };
   };
   timestamp?: number;
 }
@@ -84,7 +85,23 @@ export const processDirectMessage = async (
       return;
     }
 
-    const igCrm = buildInstagramCrmPayloadFromMessage(message);
+    const recipientId = event.recipient?.id;
+    const isBusinessSender =
+      Boolean(instance.instagramAccountId) && senderId === instance.instagramAccountId;
+    const isEcho = message.is_echo === true;
+
+    /** Perfil do interlocutor no CRM: inbound = remetente; eco (enviado pelo app) = destinatário (cliente). */
+    let peerProfile: { name?: string; username?: string; profile_pic?: string } | null = null;
+    const igTokenEarly = (instance as { accessToken?: string }).accessToken;
+    if (!isBusinessSender && igTokenEarly) {
+      peerProfile = await getInstagramMessagingUserProfile(igTokenEarly, senderId);
+    } else if (isBusinessSender && isEcho && recipientId && igTokenEarly) {
+      peerProfile = await getInstagramMessagingUserProfile(igTokenEarly, recipientId);
+    }
+
+    const igCrm = buildInstagramCrmPayloadFromMessage(message, {
+      senderUsername: peerProfile?.username ?? null,
+    });
     const messageTextForAutomation = (message.text || '').trim();
     const storedSummaryText = igCrm.content;
     const messageId = message.mid;
@@ -112,13 +129,8 @@ export const processDirectMessage = async (
     );
 
     let crmSync: Awaited<ReturnType<typeof syncInstagramInboundDmToCrm>> = null;
-    if (senderId !== instance.instagramAccountId) {
-      let profile: { name?: string; username?: string; profile_pic?: string } | null = null;
-      const igToken = (instance as { accessToken?: string }).accessToken;
-      if (igToken) {
-        profile = await getInstagramMessagingUserProfile(igToken, senderId);
-      }
-      const displayName = formatIgContactDisplayName(profile);
+    if (!isBusinessSender) {
+      const displayName = formatIgContactDisplayName(peerProfile);
       crmSync = await syncInstagramInboundDmToCrm({
         userId,
         instanceId,
@@ -129,13 +141,41 @@ export const processDirectMessage = async (
         mediaUrl: igCrm.mediaUrl,
         timestamp,
         contactDisplayName: displayName,
-        profilePictureUrl: profile?.profile_pic ?? null,
+        profilePictureUrl: peerProfile?.profile_pic ?? null,
+      });
+    } else if (isEcho && recipientId) {
+      /** Eco: sender = página IG, recipient = cliente — espelhar no chat do contacto como outbound. */
+      const displayName = formatIgContactDisplayName(peerProfile);
+      crmSync = await syncInstagramInboundDmToCrm({
+        userId,
+        instanceId,
+        senderId: recipientId,
+        messageId,
+        text: igCrm.content,
+        messageType: igCrm.messageType,
+        mediaUrl: igCrm.mediaUrl,
+        timestamp,
+        contactDisplayName: displayName,
+        profilePictureUrl: peerProfile?.profile_pic ?? null,
+        fromMe: true,
       });
     }
 
-    // Verificar se não é mensagem enviada pela própria conta
-    if (senderId === instance.instagramAccountId) {
-      console.log(`⚠️ Ignorando mensagem enviada pela própria conta (senderId: ${senderId})`);
+    if (isBusinessSender) {
+      if (isEcho && recipientId) {
+        console.log(
+          `📤 Eco DM (enviado pela conta) espelhado no CRM para o contacto ${recipientId} (mid: ${messageId})`
+        );
+        emitInstagramUpdate(userId, {
+          type: 'message',
+          instanceId,
+          messageId,
+          contactId: crmSync?.contactId,
+          crmMessageUuid: crmSync?.crmMessageUuid,
+        });
+      } else {
+        console.log(`⚠️ Ignorando mensagem enviada pela própria conta (senderId: ${senderId})`);
+      }
       return;
     }
 
@@ -578,10 +618,11 @@ export const processWebhook = async (body: InstagramWebhookBody): Promise<void> 
 
       if (entry.messaging) {
         for (const ev of entry.messaging) {
-          if (ev.message?.is_echo) continue;
+          const echo = ev.message?.is_echo === true;
+          /** Eco: sender = página, recipient = cliente — não substituir recipient por entry.id. */
           await processDirectMessage(instance, {
             ...ev,
-            recipient: { id: recipientId },
+            recipient: echo && ev.recipient?.id ? ev.recipient : { id: recipientId },
           });
         }
       }
