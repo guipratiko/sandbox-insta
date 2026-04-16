@@ -618,10 +618,11 @@ export const processWebhook = async (body: InstagramWebhookBody): Promise<void> 
 
       if (entry.messaging) {
         for (const ev of entry.messaging) {
-          if (ev.message?.is_echo) continue;
+          const echo = ev.message?.is_echo === true;
+          /** Eco: sender = página, recipient = cliente — não substituir recipient por entry.id. */
           await processDirectMessage(instance, {
             ...ev,
-            recipient: { id: recipientId },
+            recipient: echo && ev.recipient?.id ? ev.recipient : { id: recipientId },
           });
         }
       }
