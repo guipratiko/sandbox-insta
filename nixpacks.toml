@@ -1,7 +1,8 @@
 # Se continuar a usar Nixpacks: menos pacotes (omit=dev), flags de CI e sem cache BuildKit em ~/.npm
 # (o mount de cache do npm em alguns servidores EasyPanel fica “preso” vários minutos sem logs).
 [phases.install]
-cmds = ["npm ci --omit=dev --no-audit --fund=false"]
+# Logs durante o install (o painel fica muito tempo sem linha nova no npm ci).
+cmds = ["npm ci --omit=dev --no-audit --fund=false --loglevel info"]
 cacheDirectories = []
 
 [phases.build]
