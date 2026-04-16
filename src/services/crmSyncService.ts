@@ -52,8 +52,6 @@ export interface InstagramCrmSyncParams {
    * Fora do backfill deve ser false/omitido.
    */
   triggersSuppressed?: boolean;
-  /** Eco / enviado pela página (ex.: app Instagram); `senderId` deve ser o PSID do cliente (recipient no webhook). */
-  fromMe?: boolean;
 }
 
 /**
@@ -99,7 +97,6 @@ export async function syncInstagramInboundDmToCrmWithClient(
     contactDisplayName,
     profilePictureUrl,
     triggersSuppressed = false,
-    fromMe = false,
   } = params;
 
   const remoteJid = instagramRemoteJid(senderId);
@@ -181,19 +178,18 @@ export async function syncInstagramInboundDmToCrmWithClient(
   const msgType = media ? messageType : 'conversation';
 
   if (msgExists.rows.length === 0) {
-    const readFlag = fromMe ? true : triggersSuppressed;
+    const readFlag = triggersSuppressed;
     try {
       await client.query(
         `INSERT INTO messages (
           user_id, instance_id, contact_id, remote_jid, message_id, from_me, message_type, content, media_url, timestamp, read
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        ) VALUES ($1, $2, $3, $4, $5, false, $6, $7, $8, $9, $10)`,
         [
           userId,
           instanceId,
           contactId,
           remoteJid,
           crmMessageId,
-          fromMe,
           msgType,
           content,
           media,
@@ -344,9 +340,7 @@ export async function backfillInstagramHistoryToCrm(instance: IInstanceForCrmBac
             : (raw as { message?: { text?: string; attachments?: unknown[] } });
         const m = obj?.message;
         if (m && typeof m === 'object') {
-          const b = buildInstagramCrmPayloadFromMessage(m as IgWebhookMessage, {
-            senderUsername: prof?.username ?? null,
-          });
+          const b = buildInstagramCrmPayloadFromMessage(m as IgWebhookMessage);
           text = b.content;
           messageType = b.messageType;
           mediaUrl = b.mediaUrl;
