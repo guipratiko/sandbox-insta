@@ -1,7 +1,18 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
+import mongoose from 'mongoose';
 import { AppError } from './errorHandler';
 import { JWT_CONFIG } from '../config/constants';
+
+/** Subusuário OnlyFlow: JWT traz `effectiveUserId` do titular — dados Instagram ficam sob o userId do titular. */
+function datastoreUserIdFromJwt(decoded: { id: string; effectiveUserId?: string }): string {
+  const selfId = String(decoded.id || '').trim();
+  const eff = typeof decoded.effectiveUserId === 'string' ? decoded.effectiveUserId.trim() : '';
+  if (eff && mongoose.Types.ObjectId.isValid(eff) && eff !== selfId) {
+    return eff;
+  }
+  return selfId;
+}
 
 // Interface para adicionar user ao Request
 export interface AuthRequest extends Request {
@@ -31,11 +42,10 @@ export const protect = async (
     }
 
     // Verificar token (mesmo secret do backend principal)
-    const decoded = jwt.verify(token, JWT_CONFIG.SECRET) as { id: string };
+    const decoded = jwt.verify(token, JWT_CONFIG.SECRET) as { id: string; effectiveUserId?: string };
 
-    // Adicionar user ao request
     req.user = {
-      id: decoded.id,
+      id: datastoreUserIdFromJwt(decoded),
     };
 
     next();
