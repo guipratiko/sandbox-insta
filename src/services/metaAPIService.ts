@@ -12,14 +12,16 @@ export interface MetaAPIResponse {
   data: unknown;
 }
 
-/** Log JSON completo da Meta em falhas (DM recusada, etc.). Ver `LOG_META_GRAPH_ERROR_BODY` no .env. */
+/**
+ * Log JSON completo da Meta em falhas (DM recusada, etc.).
+ * Por defeito está **sempre ligado** (incl. produção). Desliga com `LOG_META_GRAPH_ERROR_BODY=0`.
+ */
 const META_GRAPH_ERROR_BODY_MAX_CHARS = 24_000;
 
 function shouldLogMetaGraphErrorBody(): boolean {
   const v = (process.env.LOG_META_GRAPH_ERROR_BODY || '').trim().toLowerCase();
   if (v === '0' || v === 'false' || v === 'no') return false;
-  if (v === '1' || v === 'true' || v === 'yes') return true;
-  return (process.env.NODE_ENV || 'development') !== 'production';
+  return true;
 }
 
 function logMetaGraphErrorResponse(status: number | undefined, data: unknown, requestPath: string): void {
@@ -36,7 +38,8 @@ function logMetaGraphErrorResponse(status: number | undefined, data: unknown, re
       raw.length > META_GRAPH_ERROR_BODY_MAX_CHARS
         ? `${raw.slice(0, META_GRAPH_ERROR_BODY_MAX_CHARS)}\n… (truncado; total ${raw.length} chars)`
         : raw;
-    console.warn(`[Meta API] Corpo bruto da resposta Graph (HTTP ${status}) path=${requestPath}:\n${clipped}`);
+    // console.error: destaca-se do ⚠️ do errorHandler e aparece mesmo em agregadores que filtram warn
+    console.error(`[Meta API] Corpo bruto da resposta Graph (HTTP ${status}) path=${requestPath}:\n${clipped}`);
   } catch (e) {
     console.warn('[Meta API] Falha ao serializar corpo de erro:', e);
   }
