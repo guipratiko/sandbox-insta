@@ -3,13 +3,43 @@
  */
 
 import axios, { AxiosError } from 'axios';
-import { META_CONFIG, SERVER_CONFIG } from '../config/constants';
+import { META_CONFIG } from '../config/constants';
 import { createAppError } from '../utils/errorHelpers';
 import type { AppError } from '../middleware/errorHandler';
 
 export interface MetaAPIResponse {
   statusCode: number;
   data: unknown;
+}
+
+/** Log JSON completo da Meta em falhas (DM recusada, etc.). Ver `LOG_META_GRAPH_ERROR_BODY` no .env. */
+const META_GRAPH_ERROR_BODY_MAX_CHARS = 24_000;
+
+function shouldLogMetaGraphErrorBody(): boolean {
+  const v = (process.env.LOG_META_GRAPH_ERROR_BODY || '').trim().toLowerCase();
+  if (v === '0' || v === 'false' || v === 'no') return false;
+  if (v === '1' || v === 'true' || v === 'yes') return true;
+  return (process.env.NODE_ENV || 'development') !== 'production';
+}
+
+function logMetaGraphErrorResponse(status: number | undefined, data: unknown, requestPath: string): void {
+  if (!shouldLogMetaGraphErrorBody()) return;
+  if (typeof status !== 'number' || status < 400) return;
+  try {
+    const raw =
+      typeof data === 'string'
+        ? data
+        : data !== undefined && data !== null
+          ? JSON.stringify(data, null, 2)
+          : '';
+    const clipped =
+      raw.length > META_GRAPH_ERROR_BODY_MAX_CHARS
+        ? `${raw.slice(0, META_GRAPH_ERROR_BODY_MAX_CHARS)}\n… (truncado; total ${raw.length} chars)`
+        : raw;
+    console.warn(`[Meta API] Corpo bruto da resposta Graph (HTTP ${status}) path=${requestPath}:\n${clipped}`);
+  } catch (e) {
+    console.warn('[Meta API] Falha ao serializar corpo de erro:', e);
+  }
 }
 
 /** Mensagem legível típica do corpo de erro da Graph API (`error.message`). */
@@ -25,41 +55,17 @@ function extractMetaGraphUserMessage(data: unknown): string | null {
   return null;
 }
 
-/** Log do JSON/string cru devolvido pela Meta em erro. `META_LOG_RAW_GRAPH_ERROR=1` força; `=0` desliga. Fora disso, loga se não for production. */
-function shouldLogRawMetaGraphError(): boolean {
-  const v = process.env.META_LOG_RAW_GRAPH_ERROR?.trim().toLowerCase();
-  if (v === '0' || v === 'false' || v === 'off') return false;
-  if (v === '1' || v === 'true' || v === 'on') return true;
-  return SERVER_CONFIG.NODE_ENV !== 'production';
-}
-
-function formatMetaRawBody(data: unknown, maxChars: number): string {
-  if (data === undefined || data === null) return '(sem corpo)';
-  if (typeof data === 'string') {
-    return data.length > maxChars ? `${data.slice(0, maxChars)}\n…(truncado)` : data;
-  }
-  try {
-    const s = JSON.stringify(data, null, 2);
-    return s.length > maxChars ? `${s.slice(0, maxChars)}\n…(truncado)` : s;
-  } catch {
-    return String(data).slice(0, maxChars);
-  }
-}
-
 /**
  * Converte falha Axios na Graph em AppError com o mesmo HTTP da Meta,
  * para o CRM OnlyFlow não receber 500 genérico do microserviço Instagram.
  */
-function toMetaError(err: unknown, context: string): AppError {
+function toMetaError(err: unknown, context: string, requestPathForLog?: string): AppError {
   if (axios.isAxiosError(err)) {
     const ax = err as AxiosError;
     const status = ax.response?.status;
     const data = ax.response?.data;
-    if (shouldLogRawMetaGraphError() && data !== undefined && data !== null) {
-      console.warn(
-        `[Meta API] Payload cru (${context}) HTTP ${typeof status === 'number' ? status : '?'}:\n${formatMetaRawBody(data, 16000)}`
-      );
-    }
+    const pathForLog = requestPathForLog ?? (typeof ax.config?.url === 'string' ? ax.config.url : context);
+    logMetaGraphErrorResponse(status, data, pathForLog);
     const userMsg = extractMetaGraphUserMessage(data);
     const fallback =
       data !== undefined && data !== null
@@ -113,7 +119,7 @@ export const requestMetaAPI = async (
     const response = await axios(config);
     return { statusCode: response.status, data: response.data };
   } catch (error) {
-    throw toMetaError(error, 'Meta API');
+    throw toMetaError(error, 'Meta API', `${method} ${path}`);
   }
 };
 
