@@ -4,19 +4,49 @@
 
 import axios, { AxiosError } from 'axios';
 import { META_CONFIG } from '../config/constants';
+import { createAppError } from '../utils/errorHelpers';
+import type { AppError } from '../middleware/errorHandler';
 
 export interface MetaAPIResponse {
   statusCode: number;
   data: unknown;
 }
 
-function toMetaError(err: unknown, context: string): Error {
-  if (axios.isAxiosError(err)) {
-    const status = (err as AxiosError).response?.status;
-    const data = (err as AxiosError).response?.data;
-    return new Error(`${context}: ${status} - ${JSON.stringify(data)}`);
+/** Mensagem legível típica do corpo de erro da Graph API (`error.message`). */
+function extractMetaGraphUserMessage(data: unknown): string | null {
+  if (!data || typeof data !== 'object') return null;
+  const d = data as Record<string, unknown>;
+  const nested = d.error;
+  if (nested && typeof nested === 'object') {
+    const e = nested as Record<string, unknown>;
+    if (typeof e.message === 'string' && e.message.trim()) return e.message.trim();
   }
-  return err instanceof Error ? err : new Error(String(err));
+  if (typeof d.message === 'string' && d.message.trim()) return d.message.trim();
+  return null;
+}
+
+/**
+ * Converte falha Axios na Graph em AppError com o mesmo HTTP da Meta (ex. 403 janela DM),
+ * para o CRM OnlyFlow não receber 500 genérico do microserviço Instagram.
+ */
+function toMetaError(err: unknown, context: string): AppError {
+  if (axios.isAxiosError(err)) {
+    const ax = err as AxiosError;
+    const status = ax.response?.status;
+    const data = ax.response?.data;
+    const userMsg = extractMetaGraphUserMessage(data);
+    const fallback =
+      data !== undefined && data !== null
+        ? `${context}: ${typeof status === 'number' ? status : '?'} - ${typeof data === 'object' ? JSON.stringify(data).slice(0, 1200) : String(data)}`
+        : `${context}: ${ax.message || 'falha de rede'}`;
+    const msg = (userMsg || fallback).slice(0, 2000);
+    const http = typeof status === 'number' && status >= 400 && status < 600 ? status : 502;
+    return createAppError(msg, http, 'meta_api');
+  }
+  if (err instanceof Error) {
+    return createAppError(err.message.slice(0, 2000), 500, 'error');
+  }
+  return createAppError(String(err).slice(0, 2000), 500, 'error');
 }
 
 /**
