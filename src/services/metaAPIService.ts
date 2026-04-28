@@ -3,7 +3,7 @@
  */
 
 import axios, { AxiosError } from 'axios';
-import { META_CONFIG } from '../config/constants';
+import { META_CONFIG, SERVER_CONFIG } from '../config/constants';
 import { createAppError } from '../utils/errorHelpers';
 import type { AppError } from '../middleware/errorHandler';
 
@@ -25,6 +25,27 @@ function extractMetaGraphUserMessage(data: unknown): string | null {
   return null;
 }
 
+/** Log do JSON/string cru devolvido pela Meta em erro. `META_LOG_RAW_GRAPH_ERROR=1` força; `=0` desliga. Fora disso, loga se não for production. */
+function shouldLogRawMetaGraphError(): boolean {
+  const v = process.env.META_LOG_RAW_GRAPH_ERROR?.trim().toLowerCase();
+  if (v === '0' || v === 'false' || v === 'off') return false;
+  if (v === '1' || v === 'true' || v === 'on') return true;
+  return SERVER_CONFIG.NODE_ENV !== 'production';
+}
+
+function formatMetaRawBody(data: unknown, maxChars: number): string {
+  if (data === undefined || data === null) return '(sem corpo)';
+  if (typeof data === 'string') {
+    return data.length > maxChars ? `${data.slice(0, maxChars)}\n…(truncado)` : data;
+  }
+  try {
+    const s = JSON.stringify(data, null, 2);
+    return s.length > maxChars ? `${s.slice(0, maxChars)}\n…(truncado)` : s;
+  } catch {
+    return String(data).slice(0, maxChars);
+  }
+}
+
 /**
  * Converte falha Axios na Graph em AppError com o mesmo HTTP da Meta,
  * para o CRM OnlyFlow não receber 500 genérico do microserviço Instagram.
@@ -34,6 +55,11 @@ function toMetaError(err: unknown, context: string): AppError {
     const ax = err as AxiosError;
     const status = ax.response?.status;
     const data = ax.response?.data;
+    if (shouldLogRawMetaGraphError() && data !== undefined && data !== null) {
+      console.warn(
+        `[Meta API] Payload cru (${context}) HTTP ${typeof status === 'number' ? status : '?'}:\n${formatMetaRawBody(data, 16000)}`
+      );
+    }
     const userMsg = extractMetaGraphUserMessage(data);
     const fallback =
       data !== undefined && data !== null
