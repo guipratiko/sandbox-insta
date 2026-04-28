@@ -12,40 +12,7 @@ export interface MetaAPIResponse {
   data: unknown;
 }
 
-/**
- * Log JSON completo da Meta em falhas (DM recusada, etc.).
- * Por defeito está **sempre ligado** (incl. produção). Desliga com `LOG_META_GRAPH_ERROR_BODY=0`.
- */
-const META_GRAPH_ERROR_BODY_MAX_CHARS = 24_000;
-
-function shouldLogMetaGraphErrorBody(): boolean {
-  const v = (process.env.LOG_META_GRAPH_ERROR_BODY || '').trim().toLowerCase();
-  if (v === '0' || v === 'false' || v === 'no') return false;
-  return true;
-}
-
-function logMetaGraphErrorResponse(status: number | undefined, data: unknown, requestPath: string): void {
-  if (!shouldLogMetaGraphErrorBody()) return;
-  if (typeof status !== 'number' || status < 400) return;
-  try {
-    const raw =
-      typeof data === 'string'
-        ? data
-        : data !== undefined && data !== null
-          ? JSON.stringify(data, null, 2)
-          : '';
-    const clipped =
-      raw.length > META_GRAPH_ERROR_BODY_MAX_CHARS
-        ? `${raw.slice(0, META_GRAPH_ERROR_BODY_MAX_CHARS)}\n… (truncado; total ${raw.length} chars)`
-        : raw;
-    // console.error: destaca-se do ⚠️ do errorHandler e aparece mesmo em agregadores que filtram warn
-    console.error(`[Meta API] Corpo bruto da resposta Graph (HTTP ${status}) path=${requestPath}:\n${clipped}`);
-  } catch (e) {
-    console.warn('[Meta API] Falha ao serializar corpo de erro:', e);
-  }
-}
-
-/** Mensagem legível típica do corpo de erro da Graph API (`error.message`). */
+/** Mensagem legível do corpo de erro da Graph (`error.message`). */
 function extractMetaGraphUserMessage(data: unknown): string | null {
   if (!data || typeof data !== 'object') return null;
   const d = data as Record<string, unknown>;
@@ -59,16 +26,13 @@ function extractMetaGraphUserMessage(data: unknown): string | null {
 }
 
 /**
- * Converte falha Axios na Graph em AppError com o mesmo HTTP da Meta,
- * para o CRM OnlyFlow não receber 500 genérico do microserviço Instagram.
+ * Falha Axios na Graph → AppError com HTTP da Meta e texto amigável (evita `Meta API: 403 - {json}` no CRM).
  */
-function toMetaError(err: unknown, context: string, requestPathForLog?: string): AppError {
+function toMetaError(err: unknown, context: string): AppError {
   if (axios.isAxiosError(err)) {
     const ax = err as AxiosError;
     const status = ax.response?.status;
     const data = ax.response?.data;
-    const pathForLog = requestPathForLog ?? (typeof ax.config?.url === 'string' ? ax.config.url : context);
-    logMetaGraphErrorResponse(status, data, pathForLog);
     const userMsg = extractMetaGraphUserMessage(data);
     const fallback =
       data !== undefined && data !== null
@@ -122,7 +86,7 @@ export const requestMetaAPI = async (
     const response = await axios(config);
     return { statusCode: response.status, data: response.data };
   } catch (error) {
-    throw toMetaError(error, 'Meta API', `${method} ${path}`);
+    throw toMetaError(error, 'Meta API');
   }
 };
 

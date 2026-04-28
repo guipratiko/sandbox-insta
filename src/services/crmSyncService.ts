@@ -173,8 +173,10 @@ export async function syncInstagramInboundDmToCrmWithClient(
   }
 
   const msgExists = await client.query<{ id: string }>(
-    `SELECT id FROM messages WHERE message_id = $1 AND instance_id = $2`,
-    [crmMessageId, instanceId]
+    `SELECT id
+     FROM messages
+     WHERE message_id = $1 AND instance_id = $2 AND contact_id = $3::uuid`,
+    [crmMessageId, instanceId, contactId]
   );
   const content = text || '';
   const media = mediaUrl && String(mediaUrl).trim() !== '' ? String(mediaUrl).trim() : null;
@@ -210,8 +212,10 @@ export async function syncInstagramInboundDmToCrmWithClient(
   }
 
   const ex = await client.query<{ id: string }>(
-    `SELECT id FROM messages WHERE message_id = $1 AND instance_id = $2`,
-    [crmMessageId, instanceId]
+    `SELECT id
+     FROM messages
+     WHERE message_id = $1 AND instance_id = $2 AND contact_id = $3::uuid`,
+    [crmMessageId, instanceId, contactId]
   );
   const crmMessageUuid = ex.rows[0]?.id;
   if (!crmMessageUuid) {
@@ -235,28 +239,39 @@ export async function syncInstagramInboundDmToCrm(
   }
 }
 
-/** Compara contagens para saber se falta espelhar histórico do instagram_messages. */
+/** Compara por IDs (não só contagem) para saber se falta espelhar histórico no CRM. */
 export async function needsInstagramCrmBackfill(
   instanceId: string,
   businessInstagramAccountId: string | undefined
 ): Promise<boolean> {
   const biz = (businessInstagramAccountId || '').trim();
-  const igRes = await pgPool.query<{ c: string }>(
+  const missingRes = await pgPool.query<{ c: string }>(
     biz
-      ? `SELECT COUNT(*)::text AS c FROM instagram_messages WHERE instance_id = $1 AND sender_id <> $2`
-      : `SELECT COUNT(*)::text AS c FROM instagram_messages WHERE instance_id = $1`,
+      ? `SELECT COUNT(*)::text AS c
+         FROM instagram_messages ig
+         LEFT JOIN messages m
+           ON m.instance_id = ig.instance_id
+          AND m.message_id = CASE
+                WHEN LENGTH(ig.message_id) <= 255 THEN ig.message_id
+                ELSE NULL
+              END
+         WHERE ig.instance_id = $1
+           AND ig.sender_id <> $2
+           AND m.id IS NULL`
+      : `SELECT COUNT(*)::text AS c
+         FROM instagram_messages ig
+         LEFT JOIN messages m
+           ON m.instance_id = ig.instance_id
+          AND m.message_id = CASE
+                WHEN LENGTH(ig.message_id) <= 255 THEN ig.message_id
+                ELSE NULL
+              END
+         WHERE ig.instance_id = $1
+           AND m.id IS NULL`,
     biz ? [instanceId, biz] : [instanceId]
   );
-  const crmRes = await pgPool.query<{ c: string }>(
-    `SELECT COUNT(*)::text AS c
-     FROM messages m
-     INNER JOIN contacts c ON c.id = m.contact_id
-     WHERE m.instance_id = $1 AND c.remote_jid LIKE '%' || $2`,
-    [instanceId, INSTAGRAM_JID_SUFFIX]
-  );
-  const ig = parseInt(igRes.rows[0]?.c || '0', 10);
-  const crm = parseInt(crmRes.rows[0]?.c || '0', 10);
-  return ig > crm;
+  const missing = parseInt(missingRes.rows[0]?.c || '0', 10);
+  return missing > 0;
 }
 
 const backfillInProgress = new Set<string>();

@@ -18,11 +18,6 @@ export const errorHandler = (
   if (statusCode >= 500) {
     console.error('❌ [Instagram OnlyFlow] Erro:', err.message);
     console.error('   Stack:', err.stack);
-  } else if (statusCode >= 400) {
-    // 4xx (ex.: 403 janela de mensagens da Meta) não era logado — parecia que o pedido não chegava ao microserviço.
-    console.warn(
-      `⚠️ [Instagram OnlyFlow] ${req.method} ${req.originalUrl} → HTTP ${statusCode}: ${err.message}`
-    );
   }
 
   res.status(statusCode).json({
