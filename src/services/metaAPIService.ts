@@ -26,7 +26,7 @@ function extractMetaGraphUserMessage(data: unknown): string | null {
 }
 
 /**
- * Converte falha Axios na Graph em AppError com o mesmo HTTP da Meta (ex. 403 janela DM),
+ * Converte falha Axios na Graph em AppError com o mesmo HTTP da Meta,
  * para o CRM OnlyFlow não receber 500 genérico do microserviço Instagram.
  */
 function toMetaError(err: unknown, context: string): AppError {
