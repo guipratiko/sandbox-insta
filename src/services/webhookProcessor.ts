@@ -179,6 +179,11 @@ export const processDirectMessage = async (
       return;
     }
 
+    const { canUserRunAutomations } = await import('./onlyflowPlanCheck');
+    if (!(await canUserRunAutomations(String(instance.userId)))) {
+      return;
+    }
+
     // Buscar automações ativas para DM (só texto legenda; mídia pura não dispara por palavra-chave)
     const automation = await AutomationService.findMatchingAutomation(
       instanceId,
@@ -380,11 +385,17 @@ export const processComment = async (
       return;
     }
 
+    const { canUserRunAutomations: canRunComment } = await import('./onlyflowPlanCheck');
+    if (!(await canRunComment(userId))) {
+      return;
+    }
+
     // Buscar automações ativas para comentários
     const automation = await AutomationService.findMatchingAutomation(
       instanceId,
       'comment',
-      text
+      text,
+      postId
     );
 
     if (automation) {

@@ -25,6 +25,8 @@ export interface Automation {
   responseSequence?: ResponseSequenceItem[]; // Para DM (sequência de mensagens)
   delaySeconds: number; // Delay global (deprecated, usar delay em cada item da sequência)
   preventDuplicate: boolean; // Evitar que o mesmo contato entre novamente no mesmo fluxo
+  /** IDs de postagem (media) alvo — obrigatório para type=comment. */
+  targetMediaIds: string[];
   isActive: boolean;
   createdAt: Date;
   updatedAt: Date;
@@ -43,6 +45,7 @@ export interface CreateAutomationData {
   responseSequence?: ResponseSequenceItem[]; // Obrigatório para DM quando responseType === 'direct'
   delaySeconds?: number;
   preventDuplicate?: boolean; // Padrão: true
+  targetMediaIds?: string[];
   isActive?: boolean;
 }
 
@@ -56,6 +59,7 @@ export interface UpdateAutomationData {
   responseSequence?: ResponseSequenceItem[];
   delaySeconds?: number;
   preventDuplicate?: boolean;
+  targetMediaIds?: string[];
   isActive?: boolean;
 }
 
@@ -82,6 +86,9 @@ export class AutomationService {
       responseSequence: responseSequence && responseSequence.length > 0 ? responseSequence : undefined,
       delaySeconds: row.delay_seconds || 0,
       preventDuplicate: row.prevent_duplicate !== undefined ? row.prevent_duplicate : true,
+      targetMediaIds: Array.isArray(row.target_media_ids)
+        ? row.target_media_ids.map((id: unknown) => String(id))
+        : [],
       isActive: row.is_active,
       createdAt: row.created_at,
       updatedAt: row.updated_at,
@@ -108,11 +115,20 @@ export class AutomationService {
       data.keywords = validKeywords.map((k) => k.trim());
     }
 
+    const targetMediaIds =
+      data.type === 'comment'
+        ? (data.targetMediaIds || []).map((id) => String(id).trim()).filter(Boolean)
+        : [];
+    if (data.type === 'comment' && targetMediaIds.length === 0) {
+      throw new Error('Selecione pelo menos uma postagem para automações de comentário');
+    }
+
     const query = `
       INSERT INTO instagram_automations (
         user_id, instance_id, name, type, trigger_type,
-        keywords, response_text, response_type, response_text_dm, response_sequence, delay_seconds, prevent_duplicate, is_active
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        keywords, response_text, response_type, response_text_dm, response_sequence,
+        delay_seconds, prevent_duplicate, target_media_ids, is_active
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
       RETURNING *
     `;
 
@@ -129,6 +145,7 @@ export class AutomationService {
       data.responseSequence ? JSON.stringify(data.responseSequence) : null,
       data.delaySeconds !== undefined ? Math.max(0, Math.floor(data.delaySeconds)) : 0,
       data.preventDuplicate !== undefined ? data.preventDuplicate : true,
+      targetMediaIds,
       data.isActive !== undefined ? data.isActive : true,
     ]);
 
@@ -281,6 +298,18 @@ export class AutomationService {
       values.push(data.isActive);
     }
 
+    if (data.targetMediaIds !== undefined) {
+      if (currentAutomation.type !== 'comment') {
+        throw new Error('targetMediaIds só se aplica a automações de comentário');
+      }
+      const ids = data.targetMediaIds.map((id) => String(id).trim()).filter(Boolean);
+      if (ids.length === 0) {
+        throw new Error('Selecione pelo menos uma postagem');
+      }
+      updates.push(`target_media_ids = $${paramIndex++}`);
+      values.push(ids);
+    }
+
     if (updates.length === 0) {
       return this.getById(id, userId);
     }
@@ -321,12 +350,21 @@ export class AutomationService {
   static async findMatchingAutomation(
     instanceId: string,
     type: 'dm' | 'comment',
-    text: string
+    text: string,
+    mediaId?: string | null
   ): Promise<Automation | null> {
     const automations = await this.getActiveByInstance(instanceId);
     const relevantAutomations = automations.filter((auto) => auto.type === type);
 
     for (const automation of relevantAutomations) {
+      if (type === 'comment') {
+        const postId = String(mediaId || '').trim();
+        const allowed = automation.targetMediaIds || [];
+        if (!postId || allowed.length === 0 || !allowed.includes(postId)) {
+          continue;
+        }
+      }
+
       if (automation.triggerType === 'all') {
         return automation;
       }

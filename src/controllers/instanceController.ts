@@ -11,6 +11,7 @@ import {
   exchangeForLongLivedToken,
   getInstagramAccountInfo,
   getLinkedFacebookPageForInstagram,
+  listInstagramMedia,
   subscribeInstagramSubscribedApps,
   subscribePageToApp,
 } from '../services/metaAPIService';
@@ -77,6 +78,52 @@ export const getInstances = async (
     });
   } catch (error: unknown) {
     return next(handleControllerError(error, 'Erro ao listar instâncias'));
+  }
+};
+
+/**
+ * Listar postagens/mídias da conta Instagram (wizard de automação de comentário).
+ */
+export const getInstanceMedia = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const userId = req.user?.id;
+    const { id } = req.params;
+    const after = typeof req.query.after === 'string' ? req.query.after : undefined;
+    const limitRaw = parseInt(String(req.query.limit ?? '30'), 10);
+    const limit = Number.isFinite(limitRaw) ? limitRaw : 30;
+
+    if (!userId) {
+      return next(createValidationError('Usuário não autenticado'));
+    }
+
+    const instance = await InstanceService.getByIdWithToken(id, userId);
+    if (!instance) {
+      return next(createNotFoundError('Instância'));
+    }
+    if (!instance.accessToken || !instance.instagramAccountId) {
+      return next(createValidationError('Instância não conectada ao Instagram'));
+    }
+    if (instance.status !== 'connected') {
+      return next(createValidationError('Instância Instagram não está conectada'));
+    }
+
+    const { items, nextCursor } = await listInstagramMedia(
+      instance.accessToken,
+      instance.instagramAccountId,
+      { limit, after }
+    );
+
+    res.status(200).json({
+      status: 'success',
+      data: items,
+      paging: { nextCursor },
+    });
+  } catch (error: unknown) {
+    return next(handleControllerError(error, 'Erro ao listar postagens do Instagram'));
   }
 };
 

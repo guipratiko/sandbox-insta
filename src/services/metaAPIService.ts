@@ -318,6 +318,68 @@ export const sendDirectMessageAudio = (
   audioUrl: string
 ) => sendDirectMessageAttachment(accessToken, pageId, recipientId, 'audio', audioUrl);
 
+export interface InstagramMediaListItem {
+  id: string;
+  mediaType: string;
+  caption: string | null;
+  thumbnailUrl: string | null;
+  mediaUrl: string | null;
+  permalink: string | null;
+  timestamp: string | null;
+}
+
+/**
+ * Lista postagens/mídias da conta Instagram (paginação via cursor `after`).
+ */
+export const listInstagramMedia = async (
+  accessToken: string,
+  instagramUserId: string,
+  options?: { limit?: number; after?: string }
+): Promise<{ items: InstagramMediaListItem[]; nextCursor: string | null }> => {
+  const limit = Math.min(Math.max(options?.limit ?? 30, 1), 50);
+  const params: Record<string, string> = {
+    fields: 'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp',
+    limit: String(limit),
+  };
+  if (options?.after?.trim()) {
+    params.after = options.after.trim();
+  }
+
+  const response = await requestMetaAPI(
+    'GET',
+    `/${encodeURIComponent(instagramUserId)}/media`,
+    accessToken,
+    params
+  );
+
+  const body = response.data as {
+    data?: Array<Record<string, unknown>>;
+    paging?: { cursors?: { after?: string } };
+  };
+
+  const items: InstagramMediaListItem[] = (body.data || []).map((row) => {
+    const mediaUrl = typeof row.media_url === 'string' ? row.media_url : null;
+    const thumbnailUrl =
+      typeof row.thumbnail_url === 'string'
+        ? row.thumbnail_url
+        : mediaUrl;
+    return {
+      id: String(row.id ?? ''),
+      mediaType: String(row.media_type ?? ''),
+      caption: typeof row.caption === 'string' ? row.caption : null,
+      thumbnailUrl,
+      mediaUrl,
+      permalink: typeof row.permalink === 'string' ? row.permalink : null,
+      timestamp: typeof row.timestamp === 'string' ? row.timestamp : null,
+    };
+  }).filter((item) => item.id);
+
+  return {
+    items,
+    nextCursor: body.paging?.cursors?.after ?? null,
+  };
+};
+
 /**
  * Page do Facebook ligada ao IG + token de Page (necessário para subscribed_apps em graph.facebook.com).
  * Ref: https://developers.facebook.com/docs/graph-api/reference/page/subscribed_apps/

@@ -20,6 +20,7 @@ interface CreateAutomationBody {
   responseSequence?: ResponseSequenceItem[];
   delaySeconds?: number;
   preventDuplicate?: boolean;
+  targetMediaIds?: string[];
   isActive?: boolean;
 }
 
@@ -33,7 +34,13 @@ interface UpdateAutomationBody {
   responseSequence?: ResponseSequenceItem[];
   delaySeconds?: number;
   preventDuplicate?: boolean;
+  targetMediaIds?: string[];
   isActive?: boolean;
+}
+
+function normalizeTargetMediaIds(ids: unknown): string[] {
+  if (!Array.isArray(ids)) return [];
+  return ids.map((id) => String(id).trim()).filter(Boolean);
 }
 
 /**
@@ -119,6 +126,7 @@ export const createAutomation = async (
       responseSequence,
       delaySeconds,
       preventDuplicate,
+      targetMediaIds,
       isActive,
     }: CreateAutomationBody = req.body;
 
@@ -203,6 +211,13 @@ export const createAutomation = async (
       return next(createValidationError('Nome deve ter no mínimo 3 caracteres'));
     }
 
+    if (type === 'comment') {
+      const mediaIds = normalizeTargetMediaIds(targetMediaIds);
+      if (mediaIds.length === 0) {
+        return next(createValidationError('Selecione pelo menos uma postagem para a automação de comentário'));
+      }
+    }
+
     // Validação rigorosa para palavras-chave quando triggerType é 'keyword'
     if (triggerType === 'keyword') {
       if (!keywords || keywords.length === 0) {
@@ -262,6 +277,7 @@ export const createAutomation = async (
       responseSequence: (type === 'dm' && responseType === 'direct') || (type === 'comment' && responseType === 'direct' && responseSequence && responseSequence.length > 0) ? responseSequence : undefined,
       delaySeconds: delaySeconds !== undefined ? delaySeconds : 0,
       preventDuplicate: preventDuplicate !== undefined ? preventDuplicate : true,
+      targetMediaIds: type === 'comment' ? normalizeTargetMediaIds(targetMediaIds) : undefined,
       isActive: isActive !== undefined ? isActive : true,
     });
 
@@ -356,6 +372,7 @@ export const updateAutomation = async (
       responseSequence,
       delaySeconds,
       preventDuplicate,
+      targetMediaIds,
       isActive,
     }: UpdateAutomationBody = req.body;
 
@@ -473,6 +490,13 @@ export const updateAutomation = async (
       return next(createValidationError('Delay deve ser um número inteiro não negativo (em segundos)'));
     }
 
+    if (targetMediaIds !== undefined && finalType === 'comment') {
+      const mediaIds = normalizeTargetMediaIds(targetMediaIds);
+      if (mediaIds.length === 0) {
+        return next(createValidationError('Selecione pelo menos uma postagem'));
+      }
+    }
+
     const updateData: UpdateAutomationBody = {};
     if (name) updateData.name = name.trim();
     if (triggerType) updateData.triggerType = triggerType;
@@ -529,6 +553,9 @@ export const updateAutomation = async (
     
     if (delaySeconds !== undefined) updateData.delaySeconds = delaySeconds;
     if (preventDuplicate !== undefined) updateData.preventDuplicate = preventDuplicate;
+    if (targetMediaIds !== undefined && finalType === 'comment') {
+      updateData.targetMediaIds = normalizeTargetMediaIds(targetMediaIds);
+    }
     if (isActive !== undefined) updateData.isActive = isActive;
 
     const automation = await AutomationService.update(id, userId, updateData);

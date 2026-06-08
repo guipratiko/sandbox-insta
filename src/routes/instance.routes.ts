@@ -17,6 +17,7 @@ router.get('/', instanceController.getInstances);
 // CRM OnlyFlow — antes de GET /:id para não colidir
 router.post('/:id/crm/send-text', crmMessagingController.sendCrmText);
 router.post('/:id/crm/send-attachment', crmMessagingController.sendCrmAttachment);
+router.get('/:id/media', instanceController.getInstanceMedia);
 router.get('/:id', instanceController.getInstanceById);
 router.put('/:id', instanceController.updateInstance);
 router.delete('/:id', instanceController.deleteInstance);
