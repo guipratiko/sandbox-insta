@@ -11,5 +11,6 @@ router.use(protect);
 router.get('/', reportController.getReports);
 router.get('/export', reportController.exportReports);
 router.get('/stats', reportController.getStatistics);
+router.delete('/:id', reportController.deleteReport);
 
 export default router;

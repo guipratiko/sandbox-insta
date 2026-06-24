@@ -15,6 +15,7 @@ import webhookRoutes from './routes/webhook.routes';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler';
 import { connectSocket } from './socket/socketClient';
 import packageJson from '../package.json';
+import { getMindClerkyApiBase } from './services/mindclerkyTriggerService';
 
 const app: Express = express();
 const httpServer = createServer(app);
@@ -73,6 +74,7 @@ httpServer.listen(PORT, () => {
   console.log(`🚀 Servidor Instagram (OnlyFlow) rodando na porta ${PORT}`);
   console.log(`📡 Ambiente: ${SERVER_CONFIG.NODE_ENV}`);
   console.log(`🌐 API disponível em http://localhost:${PORT}/api`);
+  console.log(`🔗 ManyFlow: ${getMindClerkyApiBase()}/workflows/trigger-instagram`);
 });
 
 // Graceful shutdown

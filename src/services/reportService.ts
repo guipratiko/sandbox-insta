@@ -4,6 +4,8 @@
 
 import { pgPool } from '../config/databases';
 
+const INSTAGRAM_JID_SUFFIX = '@instagram.dm';
+
 export interface Report {
   id: string;
   instanceId: string;
@@ -47,6 +49,44 @@ export interface GetReportsParams {
 }
 
 export class ReportService {
+  private static isLikelyInstagramScopedId(value: string | null | undefined): boolean {
+    const trimmed = value?.trim();
+    if (!trimmed) return false;
+    return /^\d{8,}$/.test(trimmed);
+  }
+
+  private static extractInstagramHandleFromContactName(name: string | null | undefined): string | null {
+    if (!name?.trim()) return null;
+    const dotAt = name.match(/·\s*@([\w.]+)/);
+    if (dotAt?.[1]) return dotAt[1];
+    const leading = name.match(/^@([\w.]+)/);
+    if (leading?.[1]) return leading[1];
+    const embedded = name.match(/@([\w.]+)/);
+    return embedded?.[1] ?? null;
+  }
+
+  private static resolveReportUsername(row: {
+    username?: string | null;
+    contact_name?: string | null;
+    comment_from_username?: string | null;
+  }): string | undefined {
+    const stored = typeof row.username === 'string' ? row.username.trim() : '';
+    if (stored && !ReportService.isLikelyInstagramScopedId(stored)) {
+      return stored;
+    }
+
+    const fromContact = ReportService.extractInstagramHandleFromContactName(row.contact_name);
+    if (fromContact) return fromContact;
+
+    const fromComment =
+      typeof row.comment_from_username === 'string' ? row.comment_from_username.trim() : '';
+    if (fromComment && !ReportService.isLikelyInstagramScopedId(fromComment)) {
+      return fromComment;
+    }
+
+    return stored || undefined;
+  }
+
   /**
    * Mapear row do banco para objeto Report
    */
@@ -59,7 +99,7 @@ export class ReportService {
       commentId: row.comment_id,
       userIdInstagram: row.user_id_instagram,
       mediaId: row.media_id,
-      username: row.username,
+      username: ReportService.resolveReportUsername(row),
       interactionText: row.interaction_text,
       responseText: row.response_text,
       responseStatus: row.response_status,
@@ -122,43 +162,57 @@ export class ReportService {
 
     const offset = (page - 1) * limit;
 
-    // Construir query com filtros
-    const conditions: string[] = ['user_id = $1'];
+    // Construir query com filtros (prefixo r. para evitar ambiguidade nos JOINs)
+    const conditions: string[] = ['r.user_id = $1'];
     const values: any[] = [userId];
     let paramIndex = 2;
 
     if (instanceId) {
-      conditions.push(`instance_id = $${paramIndex++}`);
+      conditions.push(`r.instance_id = $${paramIndex++}`);
       values.push(instanceId);
     }
 
     if (interactionType) {
-      conditions.push(`interaction_type = $${paramIndex++}`);
+      conditions.push(`r.interaction_type = $${paramIndex++}`);
       values.push(interactionType);
     }
 
     if (startDate) {
-      conditions.push(`timestamp >= $${paramIndex++}`);
+      conditions.push(`r.timestamp >= $${paramIndex++}`);
       values.push(Math.floor(startDate.getTime() / 1000));
     }
 
     if (endDate) {
-      conditions.push(`timestamp <= $${paramIndex++}`);
+      conditions.push(`r.timestamp <= $${paramIndex++}`);
       values.push(Math.floor(endDate.getTime() / 1000));
     }
 
     const whereClause = conditions.join(' AND ');
 
     // Query para contar total
-    const countQuery = `SELECT COUNT(*) as total FROM instagram_reports WHERE ${whereClause}`;
+    const countQuery = `SELECT COUNT(*) as total FROM instagram_reports r WHERE ${whereClause}`;
     const countResult = await pgPool.query(countQuery, values);
     const total = parseInt(countResult.rows[0].total);
 
     // Query para obter relatórios
     const query = `
-      SELECT * FROM instagram_reports
+      SELECT
+        r.*,
+        c.name AS contact_name,
+        ic.from_username AS comment_from_username
+      FROM instagram_reports r
+      LEFT JOIN contacts c
+        ON c.user_id = r.user_id
+        AND c.instance_id = r.instance_id
+        AND (
+          c.phone = r.user_id_instagram
+          OR c.remote_jid = r.user_id_instagram || '${INSTAGRAM_JID_SUFFIX}'
+        )
+      LEFT JOIN instagram_comments ic
+        ON ic.comment_id = r.comment_id
+        AND r.interaction_type = 'comment'
       WHERE ${whereClause}
-      ORDER BY timestamp DESC
+      ORDER BY r.timestamp DESC
       LIMIT $${paramIndex++} OFFSET $${paramIndex++}
     `;
 
@@ -262,6 +316,17 @@ export class ReportService {
     `;
 
     const result = await pgPool.query(query, values);
+    return (result.rowCount || 0) > 0;
+  }
+
+  /**
+   * Excluir relatório (somente do usuário autenticado)
+   */
+  static async delete(id: string, userId: string): Promise<boolean> {
+    const result = await pgPool.query(
+      `DELETE FROM instagram_reports WHERE id = $1 AND user_id = $2`,
+      [id, userId]
+    );
     return (result.rowCount || 0) > 0;
   }
 }

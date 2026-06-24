@@ -5,6 +5,12 @@
 import { IInstagramInstance } from '../models/InstagramInstance';
 import { InstanceService } from './instanceService';
 import { AutomationService } from './automationService';
+import {
+  applyUserContactVariable,
+  pickRandomVariant,
+  resolveCommentVariants,
+  resolveDmVariants,
+} from '../utils/responseVariants';
 import { ReportService } from './reportService';
 import {
   sendDirectMessage,
@@ -23,6 +29,7 @@ import {
   formatIgContactDisplayName,
 } from './crmSyncService';
 import { buildInstagramCrmPayloadFromMessage } from '../utils/instagramDmPayload';
+import { triggerInstagramWorkflows } from './mindclerkyTriggerService';
 
 // ——— Tipos mínimos para eventos do webhook ———
 interface DirectMessageEvent {
@@ -108,6 +115,7 @@ export const processDirectMessage = async (
     const timestamp = event.timestamp ?? Math.floor(Date.now() / 1000);
     const instanceId = instance._id.toString();
     const userId = instance.userId.toString();
+    const reportUsername = peerProfile?.username?.trim() || senderId;
 
     // Salvar mensagem no banco
     await pgPool.query(
@@ -184,6 +192,36 @@ export const processDirectMessage = async (
       return;
     }
 
+    const hasMedia = Boolean(
+      (message.attachments && message.attachments.length > 0) ||
+        message.reply_to?.story ||
+        igCrm.mediaUrl
+    );
+
+    const workflowExecutedCount = await triggerInstagramWorkflows({
+      instanceId,
+      userId,
+      senderId,
+      messageText: storedSummaryText,
+      hasMedia,
+      contactUsername: peerProfile?.username ?? undefined,
+      contactName: formatIgContactDisplayName(peerProfile) ?? undefined,
+    });
+
+    if (workflowExecutedCount > 0) {
+      console.log(
+        `✅ ${workflowExecutedCount} workflow(s) ManyFlow executado(s) para DM ${messageId} — automação simples ignorada`
+      );
+      emitInstagramUpdate(userId, {
+        type: 'message',
+        instanceId,
+        messageId,
+        contactId: crmSync?.contactId,
+        crmMessageUuid: crmSync?.crmMessageUuid,
+      });
+      return;
+    }
+
     // Buscar automações ativas para DM (só texto legenda; mídia pura não dispara por palavra-chave)
     const automation = await AutomationService.findMatchingAutomation(
       instanceId,
@@ -209,7 +247,12 @@ export const processDirectMessage = async (
       try {
         let allResponses: string[] = [];
 
-        if (automation.responseType === 'direct' && automation.responseSequence) {
+        const dmVariants = resolveDmVariants(automation);
+        if (dmVariants.length > 0) {
+          const picked = applyUserContactVariable(pickRandomVariant(dmVariants), null);
+          await sendDirectMessage(instanceWithToken.accessToken, senderId, picked);
+          allResponses.push(`DM: ${picked}`);
+        } else if (automation.responseType === 'direct' && automation.responseSequence) {
           // Processar sequência de mensagens para DM
           for (let i = 0; i < automation.responseSequence.length; i++) {
             const item = automation.responseSequence[i];
@@ -277,13 +320,13 @@ export const processDirectMessage = async (
           throw new Error('Automação de DM não tem sequência de mensagens nem texto configurado');
         }
 
-        // Criar relatório (usar sender_id como username para DM)
+        // Criar relatório
         await ReportService.create({
           instanceId,
           userId,
           interactionType: 'dm',
           userIdInstagram: senderId,
-          username: senderId, // Para DM, usar sender_id como username
+          username: reportUsername,
           interactionText: storedSummaryText,
           responseText: allResponses.join(' | '),
           responseStatus: 'sent',
@@ -311,7 +354,7 @@ export const processDirectMessage = async (
           userId,
           interactionType: 'dm',
           userIdInstagram: senderId,
-          username: senderId, // Para DM, usar sender_id como username
+          username: reportUsername,
           interactionText: storedSummaryText,
           responseText: failedResponseText,
           responseStatus: 'failed',
@@ -426,11 +469,11 @@ export const processComment = async (
         let allResponses: string[] = [];
 
         if (automation.responseType === 'comment') {
-          // Responder no comentário: apenas texto
-          let responseText = automation.responseText || '';
-          if (fromUsername && responseText) {
-            responseText = responseText.replace(/\$user-contact/g, `@${fromUsername}`);
-          }
+          const commentVariants = resolveCommentVariants(automation);
+          let responseText = applyUserContactVariable(
+            pickRandomVariant(commentVariants),
+            fromUsername
+          );
 
           if (!responseText || responseText.trim().length === 0) {
             console.error(`❌ Automação ${automation.id} não tem texto de resposta configurado`);
@@ -444,17 +487,16 @@ export const processComment = async (
           );
           allResponses.push(`Comentário: ${responseText}`);
         } else if (automation.responseType === 'direct') {
-          // Enviar DM quando recebe comentário: apenas texto (não sequência)
-          // Usar sendDirectMessageByCommentId com o comment_id
           const pageId = instance.instagramAccountId || instanceWithToken.instagramAccountId;
           if (!pageId) {
             throw new Error('Instagram Account ID não encontrado');
           }
 
-          let responseText = automation.responseText || '';
-          if (fromUsername && responseText) {
-            responseText = responseText.replace(/\$user-contact/g, `@${fromUsername}`);
-          }
+          const dmVariants = resolveDmVariants(automation);
+          let responseText = applyUserContactVariable(
+            pickRandomVariant(dmVariants),
+            fromUsername
+          );
 
           if (!responseText || responseText.trim().length === 0) {
             console.error(`❌ Automação ${automation.id} não tem texto de resposta configurado`);
@@ -476,11 +518,11 @@ export const processComment = async (
             throw new Error('Instagram Account ID não encontrado');
           }
 
-          // 1. Responder no comentário
-          let commentResponseText = automation.responseText || '';
-          if (fromUsername && commentResponseText) {
-            commentResponseText = commentResponseText.replace(/\$user-contact/g, `@${fromUsername}`);
-          }
+          const commentVariants = resolveCommentVariants(automation);
+          let commentResponseText = applyUserContactVariable(
+            pickRandomVariant(commentVariants),
+            fromUsername
+          );
 
           if (!commentResponseText || commentResponseText.trim().length === 0) {
             console.error(`❌ Automação ${automation.id} não tem texto de resposta do comentário configurado`);
@@ -494,11 +536,11 @@ export const processComment = async (
           );
           allResponses.push(`Comentário: ${commentResponseText}`);
 
-          // 2. Enviar DM usando sendDirectMessageByCommentId
-          let dmResponseText = automation.responseTextDM || '';
-          if (fromUsername && dmResponseText) {
-            dmResponseText = dmResponseText.replace(/\$user-contact/g, `@${fromUsername}`);
-          }
+          const dmVariants = resolveDmVariants(automation);
+          let dmResponseText = applyUserContactVariable(
+            pickRandomVariant(dmVariants),
+            fromUsername
+          );
 
           if (!dmResponseText || dmResponseText.trim().length === 0) {
             console.error(`❌ Automação ${automation.id} não tem texto de resposta da DM configurado`);

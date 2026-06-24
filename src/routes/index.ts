@@ -3,8 +3,12 @@ import instanceRoutes from './instance.routes';
 import automationRoutes from './automation.routes';
 import reportRoutes from './report.routes';
 import privacyRoutes from './privacy.routes';
+import workflowInternalRoutes from './workflowInternal.routes';
 
 const router = Router();
+
+// Rotas internas (MindClerky — chave de serviço)
+router.use('/instagram/internal/workflow', workflowInternalRoutes);
 
 // Rotas públicas de Privacidade (devem vir antes das rotas protegidas)
 router.use('/instagram/privacy', privacyRoutes);

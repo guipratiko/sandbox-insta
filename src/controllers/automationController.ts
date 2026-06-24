@@ -7,6 +7,7 @@ import {
 } from '../utils/errorHelpers';
 import { AutomationService, ResponseSequenceItem } from '../services/automationService';
 import { pgPool } from '../config/databases';
+import { normalizeTextVariants } from '../utils/responseVariants';
 
 interface CreateAutomationBody {
   instanceId: string;
@@ -21,6 +22,8 @@ interface CreateAutomationBody {
   delaySeconds?: number;
   preventDuplicate?: boolean;
   targetMediaIds?: string[];
+  commentResponseVariants?: string[];
+  dmResponseVariants?: string[];
   isActive?: boolean;
 }
 
@@ -35,6 +38,8 @@ interface UpdateAutomationBody {
   delaySeconds?: number;
   preventDuplicate?: boolean;
   targetMediaIds?: string[];
+  commentResponseVariants?: string[];
+  dmResponseVariants?: string[];
   isActive?: boolean;
 }
 
@@ -127,6 +132,8 @@ export const createAutomation = async (
       delaySeconds,
       preventDuplicate,
       targetMediaIds,
+      commentResponseVariants,
+      dmResponseVariants,
       isActive,
     }: CreateAutomationBody = req.body;
 
@@ -278,6 +285,8 @@ export const createAutomation = async (
       delaySeconds: delaySeconds !== undefined ? delaySeconds : 0,
       preventDuplicate: preventDuplicate !== undefined ? preventDuplicate : true,
       targetMediaIds: type === 'comment' ? normalizeTargetMediaIds(targetMediaIds) : undefined,
+      commentResponseVariants: normalizeTextVariants(commentResponseVariants),
+      dmResponseVariants: normalizeTextVariants(dmResponseVariants),
       isActive: isActive !== undefined ? isActive : true,
     });
 
@@ -373,6 +382,8 @@ export const updateAutomation = async (
       delaySeconds,
       preventDuplicate,
       targetMediaIds,
+      commentResponseVariants,
+      dmResponseVariants,
       isActive,
     }: UpdateAutomationBody = req.body;
 
@@ -555,6 +566,12 @@ export const updateAutomation = async (
     if (preventDuplicate !== undefined) updateData.preventDuplicate = preventDuplicate;
     if (targetMediaIds !== undefined && finalType === 'comment') {
       updateData.targetMediaIds = normalizeTargetMediaIds(targetMediaIds);
+    }
+    if (commentResponseVariants !== undefined) {
+      updateData.commentResponseVariants = normalizeTextVariants(commentResponseVariants);
+    }
+    if (dmResponseVariants !== undefined) {
+      updateData.dmResponseVariants = normalizeTextVariants(dmResponseVariants);
     }
     if (isActive !== undefined) updateData.isActive = isActive;
 

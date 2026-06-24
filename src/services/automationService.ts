@@ -4,6 +4,7 @@
 
 import { pgPool } from '../config/databases';
 import { parseJsonbField } from '../utils/dbHelpers';
+import { normalizeTextVariants } from '../utils/responseVariants';
 
 export interface ResponseSequenceItem {
   type: 'text' | 'image' | 'video' | 'audio';
@@ -22,7 +23,11 @@ export interface Automation {
   responseText: string; // Para comentários (sempre texto)
   responseType: 'direct' | 'comment' | 'comment_and_dm';
   responseTextDM?: string; // Texto da DM quando responseType = 'comment_and_dm'
-  responseSequence?: ResponseSequenceItem[]; // Para DM (sequência de mensagens)
+  responseSequence?: ResponseSequenceItem[]; // Legado: sequência multi-mensagem
+  /** Até 3 textos de resposta no comentário (sorteio uniforme). */
+  commentResponseVariants: string[];
+  /** Até 3 textos de DM (sorteio uniforme). */
+  dmResponseVariants: string[];
   delaySeconds: number; // Delay global (deprecated, usar delay em cada item da sequência)
   preventDuplicate: boolean; // Evitar que o mesmo contato entre novamente no mesmo fluxo
   /** IDs de postagem (media) alvo — obrigatório para type=comment. */
@@ -42,7 +47,9 @@ export interface CreateAutomationData {
   responseText: string; // Obrigatório para comentários
   responseType: 'direct' | 'comment' | 'comment_and_dm';
   responseTextDM?: string; // Texto da DM quando responseType = 'comment_and_dm'
-  responseSequence?: ResponseSequenceItem[]; // Obrigatório para DM quando responseType === 'direct'
+  responseSequence?: ResponseSequenceItem[]; // Legado
+  commentResponseVariants?: string[];
+  dmResponseVariants?: string[];
   delaySeconds?: number;
   preventDuplicate?: boolean; // Padrão: true
   targetMediaIds?: string[];
@@ -57,6 +64,8 @@ export interface UpdateAutomationData {
   responseType?: 'direct' | 'comment' | 'comment_and_dm';
   responseTextDM?: string; // Texto da DM quando responseType = 'comment_and_dm'
   responseSequence?: ResponseSequenceItem[];
+  commentResponseVariants?: string[];
+  dmResponseVariants?: string[];
   delaySeconds?: number;
   preventDuplicate?: boolean;
   targetMediaIds?: string[];
@@ -84,6 +93,12 @@ export class AutomationService {
       responseType: row.response_type,
       responseTextDM: row.response_text_dm || undefined,
       responseSequence: responseSequence && responseSequence.length > 0 ? responseSequence : undefined,
+      commentResponseVariants: Array.isArray(row.comment_response_variants)
+        ? row.comment_response_variants.map((v: unknown) => String(v))
+        : [],
+      dmResponseVariants: Array.isArray(row.dm_response_variants)
+        ? row.dm_response_variants.map((v: unknown) => String(v))
+        : [],
       delaySeconds: row.delay_seconds || 0,
       preventDuplicate: row.prevent_duplicate !== undefined ? row.prevent_duplicate : true,
       targetMediaIds: Array.isArray(row.target_media_ids)
@@ -123,12 +138,56 @@ export class AutomationService {
       throw new Error('Selecione pelo menos uma postagem para automações de comentário');
     }
 
+    const commentVariants = normalizeTextVariants(
+      data.commentResponseVariants?.length
+        ? data.commentResponseVariants
+        : data.responseText
+          ? [data.responseText]
+          : []
+    );
+    const dmVariants = normalizeTextVariants(
+      data.dmResponseVariants?.length
+        ? data.dmResponseVariants
+        : data.responseTextDM
+          ? [data.responseTextDM]
+          : data.type === 'dm' && data.responseText
+            ? [data.responseText]
+            : data.type === 'comment' &&
+                data.responseType === 'direct' &&
+                data.responseText
+              ? [data.responseText]
+              : []
+    );
+
+    if (data.type === 'comment' && data.responseType === 'comment' && commentVariants.length === 0) {
+      throw new Error('Informe pelo menos uma variação de resposta no comentário');
+    }
+    if (data.type === 'comment' && data.responseType === 'comment_and_dm') {
+      if (commentVariants.length === 0) {
+        throw new Error('Informe pelo menos uma variação de resposta no comentário');
+      }
+      if (dmVariants.length === 0) {
+        throw new Error('Informe pelo menos uma variação de resposta na DM');
+      }
+    }
+    if (data.type === 'comment' && data.responseType === 'direct' && dmVariants.length === 0) {
+      throw new Error('Informe pelo menos uma variação de resposta na DM');
+    }
+    if (data.type === 'dm' && dmVariants.length === 0) {
+      throw new Error('Informe pelo menos uma variação de resposta na DM');
+    }
+
+    const legacyResponseText = commentVariants[0] ?? '';
+    const legacyResponseTextDm =
+      data.responseType === 'comment_and_dm' ? dmVariants[0] ?? '' : null;
+
     const query = `
       INSERT INTO instagram_automations (
         user_id, instance_id, name, type, trigger_type,
         keywords, response_text, response_type, response_text_dm, response_sequence,
+        comment_response_variants, dm_response_variants,
         delay_seconds, prevent_duplicate, target_media_ids, is_active
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       RETURNING *
     `;
 
@@ -139,10 +198,12 @@ export class AutomationService {
       data.type,
       data.triggerType,
       data.triggerType === 'keyword' ? data.keywords : null,
-      data.responseText,
+      legacyResponseText,
       data.responseType,
-      data.responseTextDM || null,
-      data.responseSequence ? JSON.stringify(data.responseSequence) : null,
+      legacyResponseTextDm,
+      data.type === 'dm' ? null : data.responseSequence ? JSON.stringify(data.responseSequence) : null,
+      commentVariants,
+      dmVariants,
       data.delaySeconds !== undefined ? Math.max(0, Math.floor(data.delaySeconds)) : 0,
       data.preventDuplicate !== undefined ? data.preventDuplicate : true,
       targetMediaIds,
@@ -308,6 +369,34 @@ export class AutomationService {
       }
       updates.push(`target_media_ids = $${paramIndex++}`);
       values.push(ids);
+    }
+
+    if (data.commentResponseVariants !== undefined) {
+      const variants = normalizeTextVariants(data.commentResponseVariants);
+      if (variants.length === 0) {
+        throw new Error('Informe pelo menos uma variação de resposta no comentário');
+      }
+      updates.push(`comment_response_variants = $${paramIndex++}`);
+      values.push(variants);
+      updates.push(`response_text = $${paramIndex++}`);
+      values.push(variants[0]);
+    }
+
+    if (data.dmResponseVariants !== undefined) {
+      const variants = normalizeTextVariants(data.dmResponseVariants);
+      if (variants.length === 0) {
+        throw new Error('Informe pelo menos uma variação de resposta na DM');
+      }
+      updates.push(`dm_response_variants = $${paramIndex++}`);
+      values.push(variants);
+      if (currentAutomation.responseType === 'comment_and_dm') {
+        updates.push(`response_text_dm = $${paramIndex++}`);
+        values.push(variants[0]);
+      }
+      if (currentAutomation.type === 'dm' || currentAutomation.responseType === 'direct') {
+        updates.push(`response_text = $${paramIndex++}`);
+        values.push(variants[0]);
+      }
     }
 
     if (updates.length === 0) {

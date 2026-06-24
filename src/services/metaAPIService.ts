@@ -246,6 +246,46 @@ export const sendDirectMessage = async (
   return response.data;
 };
 
+export interface InstagramQuickReply {
+  title: string;
+  payload?: string;
+}
+
+/**
+ * Envia DM com Quick Replies (botões de resposta rápida).
+ * O título do botão tocado chega como texto na próxima mensagem do webhook.
+ */
+export const sendDirectMessageQuickReplies = async (
+  accessToken: string,
+  pageId: string,
+  recipientId: string,
+  text: string,
+  quickReplies: InstagramQuickReply[]
+): Promise<unknown> => {
+  const replies = quickReplies
+    .filter((qr) => qr.title?.trim())
+    .slice(0, 13)
+    .map((qr) => ({
+      content_type: 'text' as const,
+      title: qr.title.trim().slice(0, 20),
+      payload: (qr.payload || qr.title).trim().slice(0, 1000),
+    }));
+
+  if (replies.length === 0) {
+    throw createAppError('Ao menos um Quick Reply é obrigatório', 400, 'validation');
+  }
+
+  const response = await requestMetaAPI('POST', `/${pageId}/messages`, accessToken, {
+    recipient: { id: recipientId },
+    message: {
+      text: text.trim(),
+      quick_replies: replies,
+    },
+  });
+
+  return response.data;
+};
+
 /**
  * Responder comentário
  */

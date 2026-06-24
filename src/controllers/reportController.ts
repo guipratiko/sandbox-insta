@@ -2,6 +2,7 @@ import { Response, NextFunction } from 'express';
 import { AuthRequest } from '../middleware/auth';
 import {
   createValidationError,
+  createNotFoundError,
   handleControllerError,
 } from '../utils/errorHelpers';
 import { ReportService } from '../services/reportService';
@@ -172,5 +173,36 @@ export const getStatistics = async (
     });
   } catch (error: unknown) {
     return next(handleControllerError(error, 'Erro ao buscar estatísticas'));
+  }
+};
+
+/**
+ * Excluir relatório
+ */
+export const deleteReport = async (
+  req: AuthRequest,
+  res: Response,
+  next: NextFunction
+): Promise<void> => {
+  try {
+    const userId = req.user?.id;
+    const { id } = req.params;
+
+    if (!userId) {
+      return next(createValidationError('Usuário não autenticado'));
+    }
+
+    const deleted = await ReportService.delete(id, userId);
+
+    if (!deleted) {
+      return next(createNotFoundError('Relatório'));
+    }
+
+    res.status(200).json({
+      status: 'success',
+      message: 'Relatório excluído com sucesso',
+    });
+  } catch (error: unknown) {
+    return next(handleControllerError(error, 'Erro ao excluir relatório'));
   }
 };
